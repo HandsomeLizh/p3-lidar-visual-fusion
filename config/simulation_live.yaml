@@ -251,9 +251,10 @@ visual_wall_timeout_sec: 6.0
 image_input_reliability: reliable
 lidar_input_reliability: reliable
 adaptive_source_selection: true
-# Simulation preference applies only after visual quality, geometry, continuity
-# and freshness checks. Invalid vision falls back to qualified LiDAR/EKF.
+# Prefer qualified visual motion slightly inside the filter, retaining LiDAR's
+# height/tilt constraints. Continuous visual pose is an unavailable-filter fallback.
 pose_source_preference: visual
+visual_motion_information_scale: 1.25
 visual_continuity:
   enabled: true
   # Same epoch only: the frontend must geometrically reconnect a retained reference.
