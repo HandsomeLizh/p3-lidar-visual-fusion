@@ -49,6 +49,8 @@
 
 窗口已确认显示目标按钮和“视觉接续定位”。新界面完成 600 次隔离刷新与目标检查，循环 P95 约 47 ms，测试进程内存约 170→175 MiB；该项是合成界面负载，不代表整套在线系统占用。
 
+继续观察同一现场运行：第 186 帧建立候选子图，第 189 帧完成 3 帧确认，`submap_id` 从 0 变为 1。随后 `lidar_usable=true`、`vision_enabled=true`、`output_source=ekf`、`localization_valid=true`，回到两路融合。现场观察到一次子图恢复尝试、零次候选撤销；这次实际恢复与前述合成撤销测试分别提供证据，不混称为行驶精度测试。整套 P3 进程树当时 RSS 约 2.67 GiB，观察峰值约 2.73 GiB，未触发内存警告。
+
 ## 查看状态
 
 - `/fusion/status`：`output_source` 为 `visual` 表示正式位姿当前由视觉接续；还应检查 `localization_valid`、`filtered_quality`。前端 `tracked` 本身不等于正式输出有效。
