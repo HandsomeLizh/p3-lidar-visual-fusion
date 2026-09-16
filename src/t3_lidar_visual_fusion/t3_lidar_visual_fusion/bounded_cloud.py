@@ -92,6 +92,9 @@ class BoundedCloudStore(VoxelCloudStore):
 
     def remove_rows(self, rows):
         rows=np.asarray(rows).reshape(-1,7)
+        # A removed voxel may be observed again later. Invalidate before the
+        # transaction, including its failure path, so reinsertion stays valid.
+        self.recent_keys=np.empty((0,3),dtype=np.int64)
         with self.connection:
             before=self.connection.total_changes
             self.connection.executemany('DELETE FROM voxels WHERE rowid=? AND ix=? AND iy=? AND iz=?',
@@ -121,4 +124,5 @@ class BoundedCloudStore(VoxelCloudStore):
 
     def memory_stats(self):
         return dict(preview_points=len(self.sample),
-            preview_array_mib=(self.sample.nbytes+self.keys.nbytes+self.rank.nbytes)/2**20)
+            preview_array_mib=(self.sample.nbytes+self.keys.nbytes+self.rank.nbytes)/2**20,
+            voxel_cache_mib=self.recent_keys.nbytes/2**20,cached_voxels_last_scan=self.last_cached_voxels)

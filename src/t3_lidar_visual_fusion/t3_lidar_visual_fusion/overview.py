@@ -50,12 +50,19 @@ class Overview:
                 np.maximum.at(self.maximum, addr, oldmax)
                 np.add.at(self.count, addr, oldn)
         ix = self._indices(points[:, :2])
-        addr = ix[:, 1], ix[:, 0]
-        np.minimum.at(self.minimum, addr, points[:, 2])
-        np.maximum.at(self.maximum, addr, points[:, 2])
+        # Reduce each cell once instead of serial scattered updates per point.
+        linear = ix[:, 1]*self.size + ix[:, 0]
+        order = np.argsort(linear, kind='stable')
+        ordered = linear[order]
+        starts = np.r_[0, np.flatnonzero(ordered[1:] != ordered[:-1])+1]
+        cells = ordered[starts]
+        heights = points[order, 2]
+        minimum, maximum = self.minimum.ravel(), self.maximum.ravel()
+        minimum[cells] = np.minimum(minimum[cells], np.minimum.reduceat(heights, starts))
+        maximum[cells] = np.maximum(maximum[cells], np.maximum.reduceat(heights, starts))
         if self.count.max() > 2**31:
             self.count //= 2
-        np.add.at(self.count, addr, 1)
+        self.count.ravel()[cells] += np.diff(np.r_[starts, len(points)]).astype(np.uint32)
 
     def layers(self):
         valid = self.count > 0

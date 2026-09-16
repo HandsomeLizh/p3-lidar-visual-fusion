@@ -26,7 +26,7 @@ def main():
     parser.add_argument('--profile',type=Path,default=ROOT/'config/hardware104.yaml')
     args=parser.parse_args();out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=False)
     domain=int(os.environ['ROS_DOMAIN_ID'])
-    if domain in (10,19,57):raise ValueError('Choose a separate test domain, such as 73')
+    if domain in (10,19,57,59):raise ValueError('Choose a separate test domain, such as 73')
     source_context=Context();rclpy.init(context=source_context,domain_id=19)
     source=Node('p3_camera_precheck',context=source_context)
     source_executor=SingleThreadedExecutor(context=source_context);source_executor.add_node(source)
@@ -39,12 +39,19 @@ def main():
     if not any(cameras) and legacy:raise RuntimeError('Existing camera driver lacks compact mapping topics')
     camera_present=all(cameras)
     rclpy.init();node=Node('p3_hardware_live_observer');counts=collections.Counter();last={};poses=[];ages=collections.defaultdict(list);received_at={};first_received={}
-    covariances=collections.defaultdict(list);pose_sources=collections.Counter()
+    covariances=collections.defaultdict(list);pose_sources=collections.Counter();map_timings=collections.defaultdict(list)
     def status(msg,key):
         counts[key]+=1
         try:
             last[key]=json.loads(msg.data)
             if key=='fusion':pose_sources[last[key].get('output_source','unknown')]+=1
+            if key=='mapping':
+                for field in ('last_map_update_sec','last_local_publish_sec','last_global_publish_sec','last_checkpoint_sec'):
+                    value=last[key].get(field)
+                    if isinstance(value,(int,float)) and len(map_timings[field])<4000:map_timings[field].append(value)
+                for prefix,field in (('stage_','map_stage_sec'),('queue_','queue_wait_sec_by_source')):
+                    for stage,value in last[key].get(field,{}).items():
+                        if len(map_timings[prefix+stage])<4000:map_timings[prefix+stage].append(value)
         except ValueError:last[key]={'invalid_json':True}
     def receive(msg,key):
         counts[key]+=1
@@ -108,6 +115,7 @@ def main():
                 position_m2_p95=float(np.quantile(np.asarray(v)[:,0],.95)),
                 rotation_rad2_p95=float(np.quantile(np.asarray(v)[:,1],.95))) for k,v in covariances.items() if v},
             output_source_status_counts=dict(pose_sources),
+            map_timing_status_samples={k:dict(samples=len(v),median=float(np.median(v)),p95=float(np.quantile(v,.95))) for k,v in map_timings.items() if v},
             lidar_frames=len(lidar),lidar_valid=sum(r['valid_update'] for r in lidar),
             lidar_imu_scans=sum(r.get('imu',{}).get('mode')=='imu' for r in lidar),
             lidar_processing_median_sec=float(np.median([r['processing_sec'] for r in lidar])) if lidar else None,

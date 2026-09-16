@@ -38,6 +38,11 @@ class VoxelCloudStore:
         )
         self.connection.commit()
         self.count = self.connection.execute("SELECT COUNT(*) FROM voxels").fetchone()[0]
+        # Positive cache of committed voxels from the previous scan. Its bound
+        # is independent of total map size (at most 1.5 MiB of int64 keys).
+        self.recent_keys = np.empty((0, 3), dtype=np.int64)
+        self.recent_key_limit = 65536
+        self.last_cached_voxels = 0
 
     def append(self, points):
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
@@ -49,14 +54,29 @@ class VoxelCloudStore:
         indices = unique_row_indices(keys)
         selected = points[indices]
         keys = keys[indices]
+        known = np.zeros(len(keys), dtype=bool)
+        if len(self.recent_keys) and len(keys):
+            # Both inputs are unique. Stable lexsort places a cached key before
+            # an equal input key; compare all axes, without hash collisions.
+            combined = np.concatenate([self.recent_keys, keys])
+            order = np.lexsort(combined.T[::-1])
+            ordered = combined[order]
+            duplicate = np.all(ordered[1:] == ordered[:-1], axis=1)
+            known[order[1:][duplicate] - len(self.recent_keys)] = True
+        self.last_cached_voxels = int(known.sum())
         before = self.connection.total_changes
         with self.connection:
             self.connection.executemany(
                 "INSERT OR IGNORE INTO voxels VALUES(?,?,?,?,?,?)",
-                (k + p for k, p in zip(keys.tolist(), selected.tolist())),
+                (k + p for k, p in zip(keys[~known].tolist(), selected[~known].tolist())),
             )
         added = self.connection.total_changes - before
         self.count += added
+        # Update only after successful commit. A failed write must not make
+        # an uncommitted point appear present on a later retry.
+        if len(keys) > self.recent_key_limit:
+            keys = keys[np.linspace(0, len(keys)-1, self.recent_key_limit, dtype=int)]
+        self.recent_keys = keys.copy()
         return added
 
     def preview(self, max_points=300000):

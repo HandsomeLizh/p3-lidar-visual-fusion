@@ -353,6 +353,7 @@ class TerrainMapper(Node):
         del queue[chosen]
         self.last_processed_source=name
         self.stats['last_queue_wait_sec']=time.monotonic()-queued
+        self.stats.setdefault('queue_wait_sec_by_source',{})[name]=self.stats['last_queue_wait_sec']
         return msg,name,t_base_sensor,stamp,point_times,pose,self.pose_quality_at(stamp)
 
     def process_queue(self,queue):
@@ -383,6 +384,8 @@ class TerrainMapper(Node):
                             tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
                     if sample is None:raise ValueError("Missing pose during LiDAR scan")
                     points[use]=base[use]@sample[:3,:3].T+sample[:3,3]
+            stage_started=time.monotonic()
+            stages={'transform':stage_started-process_started}
             if name=="lidar":
                 removed=np.empty((0,3))
                 dynamic=self.cfg.get('dynamic_map',{})
@@ -408,6 +411,7 @@ class TerrainMapper(Node):
                 self.stats['cleanup']=dict(self.cleanup.stats,pose_qualified=clear_ok,
                     removed_total=self.stats.get('cleanup',{}).get('removed_total',0)+len(removed))
             else:self.stats["tof_scans"]+=1
+            stages['cloud_store']=time.monotonic()-stage_started;stage_started=time.monotonic()
             # Bound scan-density bias while retaining min/median/max height
             # evidence for each XY cell. The existing robust map rejects outliers.
             keys=np.floor(points[:,:2]/self.cfg["map_resolution"]).astype(np.int64)
@@ -424,10 +428,13 @@ class TerrainMapper(Node):
                     selected=selected[np.linspace(0,len(selected)-1,self.cfg["max_elevation_points"],dtype=int)]
                 self.grid.update_elevation_only(points_map=points[selected])
                 self.add_semantics(base[selected],points[selected],stamp)
+            stages['elevation']=time.monotonic()-stage_started;stage_started=time.monotonic()
             self.overview.update(points)
+            stages['overview']=time.monotonic()-stage_started
             self.advance_map_stamp(msg)
             self.dirty=True;self.stats["mapped_scans"]+=1;self.stats["map_points"]=self.cloud.count
             self.stats["last_map_update_sec"]=time.monotonic()-process_started
+            self.stats['map_stage_sec']=stages
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
             with self.input_lock:self.stats["dropped_scans"]+=1
             if isinstance(e,(OSError,sqlite3.Error)):self.storage_paused=True
