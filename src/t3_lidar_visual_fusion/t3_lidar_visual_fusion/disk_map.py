@@ -14,7 +14,7 @@ import numpy as np
 import yaml
 from .legacy.tiled_semantic_map import TiledSemanticMapManager
 
-FIELDS = TiledSemanticMapManager._SNAPSHOT_TILE_FIELDS
+FIELDS = TiledSemanticMapManager._SNAPSHOT_TILE_FIELDS + (("stereo_owned",np.bool_),)
 
 
 def configure_sqlite(db, cache_mib=16):
@@ -76,6 +76,7 @@ class TileCache:
         if row is not None:
             with np.load(BytesIO(row[0]), allow_pickle=False) as data:
                 for name, dtype in FIELDS:
+                    if name=='stereo_owned' and name not in data:continue
                     value = np.asarray(data[name], dtype=dtype)
                     if value.shape != getattr(tile, name).shape:
                         raise ValueError("Corrupt elevation tile " + str(key))
@@ -149,6 +150,56 @@ class DiskElevationMap(TiledSemanticMapManager):
         row = self.tiles.db.execute("SELECT value FROM metadata WHERE key='map_revision'").fetchone()
         maximum=self.tiles.db.execute("SELECT COALESCE(MAX(revision),0) FROM tiles").fetchone()[0]
         self.update_id = max(int(row[0]) if row else 0,int(maximum))
+        self.stereo_preview=OrderedDict()
+
+    def _new_tile(self,key):
+        tile=super()._new_tile(key)
+        tile.stereo_owned=np.zeros(tile.elevation_count.shape,dtype=bool)
+        return tile
+
+    @staticmethod
+    def clear_stereo_cells(tile,rows,cols):
+        use=tile.stereo_owned[rows,cols];rows,cols=rows[use],cols[use]
+        for name in ('elevation_count','elevation_mean','elevation_M2','stereo_owned'):
+            getattr(tile,name)[rows,cols]=0
+        tile.elevation_min[rows,cols]=np.inf;tile.elevation_max[rows,cols]=-np.inf
+
+    def update_stereo(self,evidence,*,variance_floor=.0025,preview_cap=20000):
+        """Fuse confirmed stereo only into cells not observed by LiDAR/ToF.
+
+        Each row is x,y,height,height_variance,distinct_frame_count. Store a
+        conservative variance in the existing wire layer; no schema expansion
+        on the planner interface. A later range observation replaces stereo.
+        """
+        evidence=np.asarray(evidence,dtype=float).reshape(-1,5)
+        accepted=[]
+        for x,y,z,var,count in evidence:
+            if not np.isfinite([x,y,z,var,count]).all() or var<=0 or count<2:continue
+            pair=tuple(np.floor(np.array([x,y])/self.tile_length).astype(int))
+            tile=self.tiles.get(pair,writable=True,create=True)
+            row,col=tile.xy_to_single_index(x,y)
+            n=int(tile.elevation_count[row,col])
+            if n and not tile.stereo_owned[row,col]:continue
+            if n:
+                old=float(tile.elevation_mean[row,col]);old_var=tile.elevation_M2[row,col]/max(1,n-1)
+                if abs(z-old)>max(.1,3*np.sqrt(var+old_var)):continue
+                a=1/max(variance_floor,old_var);b=1/max(variance_floor,var)
+                var=max(variance_floor,min(old_var,var),1/(a+b)+(z-old)**2*a*b/(a+b)**2)
+                z=(old*a+z*b)/(a+b)
+            n=min(1000000,n+int(count))
+            tile.elevation_count[row,col]=n;tile.elevation_mean[row,col]=z
+            tile.elevation_M2[row,col]=max(var,variance_floor)*(n-1)
+            # Sparse observations do not support a vertical height envelope.
+            # Obstacles can still be inferred from neighboring confirmed cells.
+            tile.elevation_min[row,col]=tile.elevation_max[row,col]=z
+            tile.stereo_owned[row,col]=True
+            cell=tuple(np.floor(np.array([x,y])/self.resolution).astype(int))
+            self.stereo_preview.pop(cell,None);self.stereo_preview[cell]=(x,y,z)
+            accepted.append((x,y,z))
+            if len(accepted)==1:self.update_id+=1
+            tile._fusion_revision=self.update_id
+        while len(self.stereo_preview)>preview_cap:self.stereo_preview.popitem(last=False)
+        return np.asarray(accepted,dtype=float).reshape(-1,3)
 
     def update_elevation_only(self, *, points_map):
         points = np.asarray(points_map, dtype=np.float64).reshape(-1, 3)
@@ -160,7 +211,13 @@ class DiskElevationMap(TiledSemanticMapManager):
         for pair in np.unique(pairs, axis=0):
             key = tuple(map(int, pair))
             tile = self.tiles.get(key, writable=True, create=True)
-            tile.update_elevation_only(points_map=points[np.all(pairs == pair, axis=1)])
+            selected=points[np.all(pairs == pair,axis=1)]
+            rows,cols,_=tile.xy_to_indices(selected[:,0],selected[:,1])
+            if tile.stereo_owned[rows,cols].any():
+                self.clear_stereo_cells(tile,rows,cols)
+                for cell in np.unique(np.floor(selected[:,:2]/self.resolution).astype(np.int64),axis=0):
+                    self.stereo_preview.pop(tuple(cell),None)
+            tile.update_elevation_only(points_map=selected)
             tile._fusion_revision = self.update_id
 
     def add_semantics(self, points, labels):

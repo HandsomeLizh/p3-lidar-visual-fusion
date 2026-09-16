@@ -45,11 +45,11 @@ def cloud_arrays(msg, names=("x", "y", "z")):
     return np.column_stack([a[n].reshape(-1) for n in names]).astype(float)
 
 
-def xyz_cloud(points, header, extra=None):
+def xyz_cloud(points, header, extra=None, extra_name="intensity"):
     points = np.asarray(points, dtype="<f4").reshape(-1, 3)
     if extra is not None:
         points = np.column_stack([points, np.asarray(extra,dtype="<f4")]).astype("<f4")
-    names = ["x","y","z"] + (["intensity"] if extra is not None else [])
+    names = ["x","y","z"] + ([extra_name] if extra is not None else [])
     msg = PointCloud2()
     msg.header = copy.deepcopy(header)
     msg.height, msg.width = 1, len(points)

@@ -29,6 +29,7 @@ def project(projection,points):
 class GeometryResult:
     current_from_reference: np.ndarray
     metrics: dict
+    current_inliers: np.ndarray
 
 
 class StereoGeometry:
@@ -102,6 +103,7 @@ class StereoGeometry:
         image=np.asarray(current_pixels)[pairs[:,1]]
         target=np.asarray(current_points)[pairs[:,1]]
         good=np.isfinite(objects).all(axis=1)&np.isfinite(image).all(axis=1)
+        current_ids=pairs[good,1]
         objects,image,target=objects[good],image[good],target[good]
         minimum=int(self.cfg.get("min_pnp_inliers",25))
         if len(objects)<minimum:raise TrackingFailure("insufficient_temporal_depth")
@@ -140,4 +142,5 @@ class StereoGeometry:
             reprojection_median_px=float(np.median(error[accepted])),
             reprojection_p95_px=float(np.percentile(error[accepted],95)),
             stereo_checks=int(common.sum()),stereo_motion_ratio=metric_ratio,
-            stereo_motion_median_m=float(np.median(distance))))
+            stereo_motion_median_m=float(np.median(distance))),
+            np.unique(current_ids[common][distance<=tolerance]))

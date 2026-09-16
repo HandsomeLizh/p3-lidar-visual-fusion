@@ -104,6 +104,9 @@ class Monitor(Node):
         self.create_subscription(Path, '/T3/semantic/trajectory', self.on_path, retained)
         self.create_subscription(Odometry, '/T3/semantic/current_pose', self.on_pose, live)
         self.create_subscription(PointCloud2, '/T3/mapping/lidar_map', self.on_cloud, retained)
+        self.cloud_sources={}
+        self.create_subscription(PointCloud2, '/T3/mapping/stereo_map',
+                                 lambda msg:self.on_cloud(msg,'stereo'),retained)
         self.create_subscription(GridMap, '/T3/mapping/global_grid_map', self.on_grid, retained)
         self.create_subscription(String, '/T3/mapping/lidar_status', self.on_status, retained)
         self.create_subscription(String, '/Car/T3/metrics/frame_timing', self.on_timing, live)
@@ -137,10 +140,14 @@ class Monitor(Node):
         return (self.fusion_health is not None and
             (not self.fusion_health.get('localization_valid') or time.monotonic()-self.fusion_health_at>3.))
 
-    def on_cloud(self, message):
+    def on_cloud(self, message, source='lidar'):
         original = pointcloud2_xyz_array(message)
         finite = original[np.isfinite(original).all(axis=1)]
-        points = display_sample(finite)
+        self.cloud_sources[source]=(display_sample(finite),message.header.frame_id)
+        finite=np.vstack([points for points,frame in self.cloud_sources.values() if frame==message.header.frame_id])
+        # Each source is already voxel sampled and bounded. Joining it should
+        # not repeat an expensive voxel sort over the entire LiDAR preview.
+        points = finite if len(finite)<=100000 else finite[np.linspace(0,len(finite)-1,100000,dtype=int)]
         self.full_height_limits = expand_height_limits(finite[:, 2], self.full_height_limits)
         self.cloud_points, self.cloud_header = points, message.header
         self.update_color_limits()

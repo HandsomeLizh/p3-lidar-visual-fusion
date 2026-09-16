@@ -12,6 +12,7 @@ class TrackerResult:
     epoch: int
     anchor: bool
     metrics: dict
+    map_points: np.ndarray | None = None
 
 
 class LearnedStereoTracker:
@@ -88,4 +89,4 @@ class LearnedStereoTracker:
         if replace:self.keyframe=(stamp,f0,points,world_from_current.copy())
         self.last_pose=(stamp,base_pose.copy())
         metrics.update(reason="tracked",tracking_valid=True,reference_reset=False,keyframe_replaced=replace)
-        return TrackerResult(base_pose,self.epoch,False,metrics)
+        return TrackerResult(base_pose,self.epoch,False,metrics,points[result.current_inliers])

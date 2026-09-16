@@ -29,6 +29,7 @@ from .compact_delivery import CompactDelivery
 from .legacy.dense_grid_store import LiveDenseGlobalMapWriter
 from .legacy.grid_map_message import make_grid_map_message
 from .legacy.voxel_cloud_store import VoxelCloudStore
+from .stereo_mapping import StereoConfirmation
 
 
 class TerrainMapper(Node):
@@ -56,12 +57,21 @@ class TerrainMapper(Node):
         self.last_checkpoint_wall=time.monotonic();self.global_available=False;self.latest_window=None
         self.last_pose=None;self.last_header=None;self.last_stamps={};self.dirty=False
         self.stats={"mapped_scans":0,"dropped_scans":0,"map_points":0,"lidar_scans":0,"tof_scans":0}
+        self.stereo_cfg=self.cfg.get('stereo_mapping',{})
+        self.stereo_confirmation=StereoConfirmation(self.cfg['map_resolution'],self.stereo_cfg)
+        self.fusion_health={};self.fusion_health_wall=-float('inf')
+        self.stats.update(stereo_scans=0,stereo_cells=0,stereo_rejected=0,
+                          stereo_enabled=bool(self.stereo_cfg.get('enabled',False)),stereo_reason='waiting')
         self.bridge=CvBridge();self.mask=None
         self.camera_from_base=inverse(rigid(self.cfg["base_from_camera_left"]))
         self.tum=(self.output/"trajectory_map.tum").open("w")
         self.tum_last_offset=None
         self.create_subscription(Odometry,"/T3/semantic/current_pose",self.odom,100)
         self.create_subscription(PointCloud2,self.cfg.get("mapping_lidar_topic","/fusion/lidar"),lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=2,reliability=ReliabilityPolicy.RELIABLE))
+        if self.stereo_cfg.get('enabled',False):
+            self.create_subscription(PointCloud2,self.stereo_cfg.get('topic','/fusion/stereo_points'),
+                self.enqueue_stereo,QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
+            self.create_subscription(String,'/fusion/status',self.fusion_status,2)
         for source in self.cfg.get("tof_sources",[]):
             rigid(source["base_from_sensor"])
             self.create_subscription(PointCloud2,source["topic"],lambda m,s=source:self.enqueue(m,s["name"],s["base_from_sensor"]),qos_profile_sensor_data)
@@ -77,6 +87,7 @@ class TerrainMapper(Node):
         self.revision_pubs=[self.create_publisher(UInt64,t,qos) for t in
             ["/T3/mapping/global_map_revision","/Car/T3/mapping/global_map_revision"]]
         self.cloud_pub=self.create_publisher(PointCloud2,"/T3/mapping/lidar_map",qos)
+        self.stereo_cloud_pub=self.create_publisher(PointCloud2,'/T3/mapping/stereo_map',qos)
         self.elevation_pub=self.create_publisher(PointCloud2,"/T3/mapping/elevation_cloud",qos)
         self.incremental_pub=self.create_publisher(IncrementalSemanticMap,"/T3/semantic/incremental_map",qos)
         self.occupancy_pub=self.create_publisher(OccupancyGrid,"/T3/mapping/traversability",qos)
@@ -99,7 +110,7 @@ class TerrainMapper(Node):
             if appended or revised:
                 covariance=np.asarray(msg.pose.covariance).reshape(6,6)
                 self.pose_quality.append((stamp_sec(msg),float(np.max(np.diag(covariance)[:3])),
-                                          float(np.max(np.diag(covariance)[3:]))))
+                                          float(np.max(np.diag(covariance)[3:])),covariance.copy()))
                 self.last_pose=t
                 if appended:
                     self.tum_last_offset=self.tum.tell()
@@ -108,6 +119,60 @@ class TerrainMapper(Node):
                 p=msg.pose.pose;q=p.orientation
                 self.tum.write(f"{stamp_sec(msg):.9f} {p.position.x:.9f} {p.position.y:.9f} {p.position.z:.9f} {q.x:.9f} {q.y:.9f} {q.z:.9f} {q.w:.9f}\n")
         except ValueError:pass
+
+    def fusion_status(self,msg):
+        try:
+            value=json.loads(msg.data)
+            if not isinstance(value,dict):return
+            self.fusion_health=value;self.fusion_health_wall=time.monotonic()
+            if not value.get('vision_enabled') or not value.get('localization_valid'):
+                self.stereo_confirmation.clear()
+        except (ValueError,TypeError):pass
+
+    def enqueue_stereo(self,msg):
+        if (msg.header.frame_id!='camera_left_optical' or
+                msg.width*msg.height>int(self.stereo_cfg.get('max_points',512)) or
+                len(msg.data)>int(self.stereo_cfg.get('max_points',512))*32 or
+                len(self.pending)>=max(1,self.pending.maxlen-1)):
+            self.stats['stereo_rejected']+=1;self.stats['stereo_reason']='invalid_input_or_backpressure';return
+        self.enqueue(msg,'stereo',self.cfg['base_from_camera_left'])
+
+    def process_stereo(self,msg,pose,transform,stamp):
+        quality=min(self.pose_quality,key=lambda q:abs(q[0]-stamp)) if self.pose_quality else None
+        if (not self.fusion_health.get('vision_enabled') or not self.fusion_health.get('localization_valid') or
+                time.monotonic()-self.fusion_health_wall>1.5 or quality is None or
+                abs(quality[0]-stamp)>self.cfg['pose_tolerance'] or
+                not 0<=quality[1]<=self.stereo_cfg.get('max_position_variance',.04) or
+                not 0<=quality[2]<=self.stereo_cfg.get('max_rotation_variance',.01)):
+            self.stereo_confirmation.clear();self.stats['stereo_rejected']+=1
+            self.stats['stereo_reason']='visual_or_pose_unqualified';return
+        data=cloud_arrays(msg,('x','y','z','position_variance'))
+        valid=np.isfinite(data).all(axis=1)&(data[:,3]>0)&(data[:,3]<=self.stereo_cfg.get('max_point_std_m',.15)**2)
+        data=data[valid];xyz=data[:,:3]
+        ranges=np.linalg.norm(xyz,axis=1)
+        use=(ranges>=self.stereo_cfg.get('min_depth_m',.5))&(ranges<=self.stereo_cfg.get('max_depth_m',8.))
+        xyz,variance=xyz[use],data[use,3]
+        base=xyz@transform[:3,:3].T+transform[:3,3]
+        offset=base@pose[:3,:3].T;points=offset+pose[:3,3]
+        # Odometry orientation covariance is about the fixed frame axes.
+        jacobian=np.zeros((len(points),6));jacobian[:,2]=1.
+        jacobian[:,3]=offset[:,1];jacobian[:,4]=-offset[:,0]
+        covariance=quality[3]
+        if not np.isfinite(covariance).all() or np.linalg.eigvalsh((covariance+covariance.T)/2).min()<-1e-8:
+            self.stats['stereo_rejected']+=1;self.stats['stereo_reason']='invalid_pose_covariance';return
+        variance=variance+np.maximum(0.,np.einsum('ni,ij,nj->n',jacobian,covariance,jacobian))
+        use=variance<=self.stereo_cfg.get('max_height_std_m',.25)**2
+        evidence=self.stereo_confirmation.observe(points[use],variance[use],stamp)
+        accepted=self.grid.update_stereo(evidence,
+            variance_floor=self.stereo_cfg.get('variance_floor_m2',.0025),
+            preview_cap=int(self.stereo_cfg.get('preview_points',20000)))
+        self.stats['stereo_scans']+=1;self.stats['stereo_cells']+=len(accepted)
+        self.stats['stereo_reason']=('mapped' if len(accepted) else
+            'known_range_cells_or_height_conflict' if len(evidence) else
+            'confirming' if use.any() else 'depth_or_pose_uncertainty')
+        if len(accepted):
+            self.last_header=copy.deepcopy(msg.header);self.last_header.frame_id='map'
+            self.dirty=True;self.stats['mapped_scans']+=1
 
     def semantic(self,msg):
         try:
@@ -182,6 +247,10 @@ class TerrainMapper(Node):
         self.pending.popleft()
         process_started=time.monotonic()
         try:
+            if name=='stereo':
+                self.process_stereo(msg,pose,t_base_sensor,stamp)
+                self.stats['last_stereo_update_sec']=time.monotonic()-process_started
+                return
             xyz=cloud_arrays(msg)
             good=np.isfinite(xyz).all(axis=1)
             ranges=np.linalg.norm(xyz,axis=1)
@@ -209,6 +278,7 @@ class TerrainMapper(Node):
                 # this clearance path. Calibrated multi-source maps need their
                 # own retained source evidence before replacing height columns.
                 if (dynamic.get('enabled',False) and clear_ok and not self.cfg.get('tof_sources')
+                        and not self.stereo_cfg.get('enabled',False)
                         and self.cfg.get('instantaneous_cloud',False)):
                     removed=self.cleanup.update(self.cloud,xyz,pose@t_base_sensor,stamp,self.cfg['map_resolution'])
                 else:
@@ -311,6 +381,9 @@ class TerrainMapper(Node):
             self.elevation_pub.publish(xyz_cloud(pts,self.last_header,m.elevation[rr,cc]))
             preview_cap=self.cfg["cloud_preview_points"]//4 if self.pressure else self.cfg["cloud_preview_points"]
             self.cloud_pub.publish(xyz_cloud(self.cloud.preview(preview_cap),self.last_header))
+            if self.stereo_cfg.get('enabled',False):
+                self.stereo_cloud_pub.publish(xyz_cloud(
+                    np.asarray(list(self.grid.stereo_preview.values())).reshape(-1,3),self.last_header))
             inc=IncrementalSemanticMap();inc.header=copy.deepcopy(self.last_header)
             inc.update_id=self.grid.update_id%(2**32);inc.resolution=float(m.geometry.resolution)
             inc.width=m.geometry.width;inc.height=m.geometry.height
@@ -410,6 +483,7 @@ class TerrainMapper(Node):
     def report_status(self,sample=None):
         if sample is None:sample=memory_sample(self.output)
         data=dict(self.stats,**self.grid.memory_stats(),**self.cloud.memory_stats(),**sample,
+            stereo_pending_cells=len(self.stereo_confirmation.pending),stereo_preview_points=len(self.grid.stereo_preview),
             pending=len(self.pending),memory_pressure=self.pressure,map_writable=not self.storage_paused,
             global_grid_available=self.global_available,overview_resolution=self.overview.resolution,
             global_published_revision=self.last_global_revision,

@@ -10,7 +10,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile,ReliabilityPolicy
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image,PointCloud2
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 from .image_quality import assess_image
@@ -18,7 +18,8 @@ from .learned_matching import LearnedMatcher
 from .learned_tracker import LearnedStereoTracker
 from .stereo_geometry import TrackingFailure
 from .visual_timing import VisualTiming
-from .ros_utils import set_pose,stamp_sec
+from .ros_utils import set_pose,stamp_sec,xyz_cloud
+from .stereo_mapping import sparse_map_points
 
 
 class LatestStereoPair:
@@ -86,6 +87,10 @@ class LearnedOdometry(Node):
         self.backend.match(warm,warm)
         del warm
         self.tracker=LearnedStereoTracker(self.profile,self.backend)
+        self.map_cfg=self.profile.get('stereo_mapping',{})
+        self.map_stamp=-float('inf')
+        self.map_pub=(self.create_publisher(PointCloud2,self.map_cfg.get('topic','/fusion/stereo_points'),1)
+                      if self.map_cfg.get('enabled',False) else None)
         self.resources=self.backend.resource_snapshot()
         self.pub=self.create_publisher(Odometry,self.profile["visual_odometry_topic"],3)
         self.status_pub=self.create_publisher(String,"/fusion/learned_status",3)
@@ -194,6 +199,14 @@ class LearnedOdometry(Node):
                 msg.twist.covariance=np.diag(np.full(6,1e6)).reshape(-1).tolist()
                 if self.queue.stopped:return
                 self.pub.publish(msg)
+                map_count=0
+                if (self.map_pub is not None and not result.anchor and result.map_points is not None
+                        and stamp_sec(left)-self.map_stamp>=1./self.map_cfg.get('max_hz',1.)):
+                    points,uncertainty=sparse_map_points(self.tracker.geometry,result.map_points,self.map_cfg)
+                    if len(points):
+                        header=copy.deepcopy(left.header);header.frame_id='camera_left_optical'
+                        self.map_pub.publish(xyz_cloud(points,header,uncertainty,'position_variance'))
+                        self.map_stamp=stamp_sec(left);map_count=len(points)
                 self.increment("anchors" if result.anchor else "tracked")
                 if result.anchor and result.metrics["reason"] not in ("initialized","tracking_gap"):
                     self.failure_streak+=1
@@ -203,7 +216,7 @@ class LearnedOdometry(Node):
                 metrics=dict(result.metrics,epoch=result.epoch,sensor_stamp_sec=stamp_sec(left),
                     sensor_age_sec=self.age(left,queued).sensor_age_sec,
                     wall_since_input_sec=time.monotonic()-queued,
-                    processing_sec=time.perf_counter()-begin,quality_score=q)
+                    processing_sec=time.perf_counter()-begin,quality_score=q,stereo_map_points=map_count)
                 self.record(metrics)
         except Exception as exc:
             if not self.queue.stopped:
