@@ -152,15 +152,26 @@ class LearnedOdometry(Node):
             self.resources=resources
         self.file_logger.info(json.dumps(record,allow_nan=False))
 
-    def reject(self,reason,left,queued,start=None):
-        self.tracker.reset()
+    def reject(self,reason,left,queued,start=None,metrics=None):
+        retained=self.tracker.reject(stamp_sec(left))
         self.increment("rejected")
         self.failure_streak+=1
         if self.failure_streak>=self.cfg.get("backoff_after_failures",3):
             self.next_probe=time.monotonic()+self.cfg.get("failure_probe_period_sec",1.)
         age=self.age(left,queued)
-        data=dict(reason=reason,tracking_valid=False,sensor_stamp_sec=stamp_sec(left),
+        data=dict(metrics or {})
+        data.update(reason=reason,tracking_valid=False,reference_retained=retained,
+            reference_reset=not retained,epoch=self.tracker.epoch,sensor_stamp_sec=stamp_sec(left),
             sensor_age_sec=age.sensor_age_sec,wall_since_input_sec=max(0.,time.monotonic()-queued))
+        # An invalid sample closes the downstream quality gate promptly. Its
+        # large covariance prevents the held pose becoming a motion observation.
+        if age.valid:
+            msg=Odometry();msg.header=copy.deepcopy(left.header)
+            msg.header.frame_id="learned_epoch_"+str(self.tracker.epoch);msg.child_frame_id="base_link"
+            set_pose(msg.pose.pose,np.eye(4) if self.tracker.last_pose is None else self.tracker.last_pose[1])
+            msg.pose.covariance=np.diag(np.full(6,1e6)).reshape(-1).tolist()
+            msg.twist.covariance=list(msg.pose.covariance)
+            if not self.queue.stopped:self.pub.publish(msg)
         if start is not None:data["processing_sec"]=time.perf_counter()-start
         self.record(data)
 
@@ -184,7 +195,7 @@ class LearnedOdometry(Node):
                         self.reject(next(q.reason for q in quality if not q.valid),left,queued,begin);continue
                     result=self.tracker.process(stamp_sec(left),a,b)
                 except (TrackingFailure,ValueError,cv2.error) as exc:
-                    self.reject(str(exc)[:160],left,queued,begin);continue
+                    self.reject(str(exc)[:160],left,queued,begin,getattr(exc,'metrics',None));continue
                 freshness=self.age(left,queued)
                 if not freshness.valid:
                     self.reject(freshness.reason,left,queued,begin);continue

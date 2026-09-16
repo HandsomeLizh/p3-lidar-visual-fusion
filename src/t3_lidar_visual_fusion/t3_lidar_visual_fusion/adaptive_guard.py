@@ -42,7 +42,15 @@ class AdaptiveGuard(OdometryGuard):
         self.last_visual_motion_interval = None
         continuity_cfg=dict(self.cfg.get('visual_continuity',{}))
         self.visual_continuity_enabled=continuity_cfg.pop('enabled',False)
-        self.visual_continuity=VisualContinuity(max_gap=self.cfg['vision_gate']['max_gap'],**continuity_cfg)
+        continuity_gap=continuity_cfg.pop('max_gap',self.cfg['vision_gate']['max_gap'])
+        self.visual_continuity=VisualContinuity(max_gap=continuity_gap,**continuity_cfg)
+        self.pose_source_preference=self.cfg.get('pose_source_preference','balanced')
+        if self.pose_source_preference not in ('balanced','visual','fused'):
+            raise ValueError('pose_source_preference must be balanced, visual or fused')
+        self.visual_motion_information_scale=float(self.cfg.get('visual_motion_information_scale',1.))
+        if not np.isfinite(self.visual_motion_information_scale) or not 1.<=self.visual_motion_information_scale<=2.:
+            raise ValueError('visual_motion_information_scale must be in [1,2]')
+        self.ekf_candidate=None
         self.visual_candidate=None;self.prefer_visual_output=False;self.output_source='waiting'
         self.ekf_references=deque(maxlen=128)
         self.visual_pose_pub=self.create_publisher(Odometry,'/fusion/visual_continuous',3)
@@ -321,11 +329,18 @@ class AdaptiveGuard(OdometryGuard):
                 # Publication still waits for the visual recovery gate below.
                 self.visual_continuity.observe(stamp,msg.header.frame_id,transform,weighted_covariance)
                 self.visual_candidate=None
-                if reference is not None:
-                    ref_cov=self.lidar_reference_covariance_at(stamp)
-                    if ref_cov is not None:self.visual_continuity.anchor(stamp,reference,ref_cov)
-                for sample in reversed(self.ekf_references):
-                    if self.visual_continuity.anchor(*sample):break
+                # During preferred visual tracking, keep its established frame.
+                # Re-anchoring every frame would simply copy LiDAR's jitter.
+                # Startup, a new epoch and recovery from EKF fallback still
+                # establish a co-timed anchor before selecting visual output.
+                keep_reference=(self.pose_source_preference=='visual' and self.output_source=='visual'
+                    and self.output_qualified and self.visual_continuity.reference is not None)
+                if not keep_reference:
+                    if reference is not None:
+                        ref_cov=self.lidar_reference_covariance_at(stamp)
+                        if ref_cov is not None:self.visual_continuity.anchor(stamp,reference,ref_cov)
+                    for sample in reversed(self.ekf_references):
+                        if self.visual_continuity.anchor(*sample):break
             if result.transform is None:
                 if result.reason != "recovering":
                     self.visual_motion.reset()
@@ -335,6 +350,9 @@ class AdaptiveGuard(OdometryGuard):
                 if body_motion is None:
                     self.visual_usable = False; self.counters["vins_rejected"] += 1; return
                 velocity, velocity_covariance, interval = body_motion
+                # A preference changes the relative-motion measurement weight;
+                # it must not discard the filter's independent LiDAR constraints.
+                velocity_covariance=velocity_covariance/self.visual_motion_information_scale
                 if self.stationary is not None and self.stationary.check(stamp,velocity):
                     # Replace the same visual motion observation; do not add a
                     # second correlated measurement or overwrite the output pose.
@@ -384,11 +402,29 @@ class AdaptiveGuard(OdometryGuard):
         lidar,visual=self.active_sources()
         if not self.visual_continuity_enabled or not visual or self.visual_candidate is None:
             self.prefer_visual_output=False;return False
+        age=self.get_clock().now().nanoseconds/1e9-stamp_sec(self.visual_candidate)
+        if age>self.cfg.get('visual_max_age_sec',1.5) or age<-self.cfg.get('visual_future_tolerance_sec',.1):
+            self.prefer_visual_output=False;return False
         cov=pose_covariance(self.visual_candidate.pose.covariance)
         if not self.visual_covariance_qualified(cov):
             self.prefer_visual_output=False;return False
         if not lidar:
             self.prefer_visual_output=True;return True
+        if self.pose_source_preference in ('visual','fused'):
+            # Keep all observable LiDAR directions in the fused pose. In
+            # particular, small per-frame stereo height/tilt errors otherwise
+            # accumulate into thick ground and false obstacle rings. A good
+            # visual track remains the fallback if the filter is unavailable.
+            filtered=self.ekf_candidate
+            usable=False
+            if filtered is not None:
+                filtered_stamp,filtered_cov=filtered
+                filtered_age=self.get_clock().now().nanoseconds/1e9-filtered_stamp
+                usable=(-self.cfg.get('visual_future_tolerance_sec',.1)<=filtered_age
+                    <=self.cfg.get('visual_max_age_sec',1.5)
+                    and self.visual_covariance_qualified(filtered_cov))
+            self.prefer_visual_output=not usable
+            return self.prefer_visual_output
         reference=self.lidar_covariances[-1][1] if self.lidar_covariances else None
         if reference is None:self.prefer_visual_output=False;return False
         def uncertainty(value):
@@ -400,7 +436,21 @@ class AdaptiveGuard(OdometryGuard):
         return self.prefer_visual_output
 
     def filtered(self, msg, source='ekf'):
-        if source=='ekf' and self.select_visual_output():return
+        # A delayed older EKF callback cannot invalidate a newer qualified pose
+        # or discard its fusion candidate. Source freshness is checked separately.
+        if stamp_sec(msg)<self.last_filter_stamp:return
+        if source=='ekf':
+            self.ekf_candidate=None
+            try:
+                transform=transform_from_pose(msg.pose.pose)
+                stamp=stamp_sec(msg)
+                if (msg.header.frame_id=='odom' and msg.child_frame_id=='base_link'
+                    and stamp>=self.last_filter_stamp
+                    and self.output_continuity.check(stamp,transform)=='qualified'):
+                    covariance=self.preserve_bridge_uncertainty(pose_covariance(msg.pose.covariance))
+                    self.ekf_candidate=(stamp,covariance)
+            except ValueError:pass
+            if self.select_visual_output():return
         if not any(self.active_sources()):
             self.output_qualified = False
             self.filter_quality = {"reason": "no_active_source"}
@@ -491,6 +541,8 @@ class AdaptiveGuard(OdometryGuard):
             fusion_strategy="persistent_epoch_full_covariance", operating_mode=mode,
             localization_valid=bool((lidar or visual) and self.output_qualified),
             output_source=self.output_source,visual_continuity=self.visual_continuity.status(),
+            pose_source_preference=self.pose_source_preference,
+            visual_motion_information_scale=self.visual_motion_information_scale,
             submap_id=self.submap_id,bridge_position_variance=float(self.bridge_variance[0]),
             bridge_rotation_variance=float(self.bridge_variance[1]),
             filtered_quality=self.filter_quality,

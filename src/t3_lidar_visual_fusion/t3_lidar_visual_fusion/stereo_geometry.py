@@ -6,7 +6,9 @@ from .core import rigid, inverse
 
 
 class TrackingFailure(ValueError):
-    pass
+    def __init__(self,reason,metrics=None):
+        super().__init__(reason)
+        self.metrics=dict(metrics or {})
 
 
 def coverage(points,size):
@@ -135,12 +137,14 @@ class StereoGeometry:
         distance=np.linalg.norm(predicted[common]-target[common],axis=1)
         tolerance=self.cfg.get("stereo_motion_floor_m",.15)+self.cfg.get("stereo_motion_depth_ratio",.03)*target[common,2]
         metric_ratio=float(np.mean(distance<=tolerance))
-        if metric_ratio<self.cfg.get("min_stereo_motion_ratio",.6):
-            raise TrackingFailure("stereo_motion_disagreement")
-        return GeometryResult(transform,dict(temporal_with_depth=len(objects),pnp_inliers=n,
+        metrics=dict(temporal_with_depth=len(objects),pnp_inliers=n,
             pnp_ratio=ratio,pnp_coverage=spread,
             reprojection_median_px=float(np.median(error[accepted])),
             reprojection_p95_px=float(np.percentile(error[accepted],95)),
             stereo_checks=int(common.sum()),stereo_motion_ratio=metric_ratio,
-            stereo_motion_median_m=float(np.median(distance))),
+            stereo_motion_median_m=float(np.median(distance)),
+            stereo_motion_tolerance_median_m=float(np.median(tolerance)))
+        if metric_ratio<self.cfg.get("min_stereo_motion_ratio",.6):
+            raise TrackingFailure("stereo_motion_disagreement",metrics)
+        return GeometryResult(transform,metrics,
             np.unique(current_ids[common][distance<=tolerance]))

@@ -504,8 +504,13 @@ class VoxelMapNode : public rclcpp::Node {
             // Require independent visual agreement on every confirmation scan.
             const double distance=seed?(state_.pos_end-seed->lidar.topRightCorner<3,1>()).norm():1e6;
             const double angle=seed?Eigen::AngleAxisd(seed->lidar.topLeftCorner<3,3>().transpose()*state_.rot_end).angle():1e6;
-            if(!valid || distance>.25 || angle>.1) {
-                valid=false;abort_candidate(stamp);tracking_reason_="submap_validation_failed";
+            // Candidate confirmation must constrain pose independently. A
+            // low residual in a small angular sector is not enough to replace
+            // the old map; qualified vision can keep supplying poses meanwhile.
+            const bool weak_geometry=valid && !quality_.reliable();
+            if(!valid || weak_geometry || distance>.25 || angle>.1) {
+                valid=false;abort_candidate(stamp);
+                tracking_reason_=weak_geometry?"submap_weak_geometry":"submap_validation_failed";
             } else {
                 ++candidate_good_;
                 if(candidate_good_>=recovery_confirm_) {
@@ -586,7 +591,7 @@ public:
         local_radius_=declare_parameter<double>("local_map_radius",80.);
         max_layer_=declare_parameter<int>("max_layer",4);
         max_points_=declare_parameter<int>("max_points_per_cell",1000);
-        max_iterations_=declare_parameter<int>("max_iterations",12);
+        max_iterations_=declare_parameter<int>("max_iterations",20);
         if(max_iterations_<1 || max_iterations_>32)
             throw std::runtime_error("max_iterations must be in [1,32]");
         max_roots_=declare_parameter<int>("max_root_voxels",10000);

@@ -68,6 +68,12 @@ public:
   }
 };
 
+inline VOXEL_LOC voxel_location(const Eigen::Vector3d &point, double size) {
+  return VOXEL_LOC(static_cast<int64_t>(std::floor(point.x()/size)),
+                   static_cast<int64_t>(std::floor(point.y()/size)),
+                   static_cast<int64_t>(std::floor(point.z()/size)));
+}
+
 // Hash value
 namespace std {
 template <> struct hash<VOXEL_LOC> {
@@ -530,15 +536,7 @@ void buildVoxelMap(const std::vector<pointWithCov> &input_points,
   uint plsize = input_points.size();
   for (uint i = 0; i < plsize; i++) {
     const pointWithCov p_v = input_points[i];
-    float loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
-      loc_xyz[j] = p_v.point[j] / voxel_size;
-      if (loc_xyz[j] < 0) {
-        loc_xyz[j] -= 1.0;
-      }
-    }
-    VOXEL_LOC position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
-                       (int64_t)loc_xyz[2]);
+    const VOXEL_LOC position = voxel_location(p_v.point, voxel_size);
     auto iter = feat_map.find(position);
     if (iter != feat_map.end()) {
       feat_map[position]->temp_points_.push_back(p_v);
@@ -571,15 +569,7 @@ void updateVoxelMap(const std::vector<pointWithCov> &input_points,
   uint plsize = input_points.size();
   for (uint i = 0; i < plsize; i++) {
     const pointWithCov p_v = input_points[i];
-    float loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
-      loc_xyz[j] = p_v.point[j] / voxel_size;
-      if (loc_xyz[j] < 0) {
-        loc_xyz[j] -= 1.0;
-      }
-    }
-    VOXEL_LOC position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
-                       (int64_t)loc_xyz[2]);
+    const VOXEL_LOC position = voxel_location(p_v.point, voxel_size);
     auto iter = feat_map.find(position);
     if (iter != feat_map.end()) {
       feat_map[position]->UpdateOctoTree(p_v);
@@ -615,7 +605,7 @@ void build_single_residual(const pointWithCov &pv, const OctoTree *current_octo,
         (plane.center(0) - p_w(0)) * (plane.center(0) - p_w(0)) +
         (plane.center(1) - p_w(1)) * (plane.center(1) - p_w(1)) +
         (plane.center(2) - p_w(2)) * (plane.center(2) - p_w(2));
-    float range_dis = sqrt(dis_to_center - dis_to_plane * dis_to_plane);
+    float range_dis = sqrt(std::max(0.f, dis_to_center - dis_to_plane * dis_to_plane));
 
     if (range_dis <= radius_k * plane.radius) {
       Eigen::Matrix<double, 1, 6> J_nq;
@@ -623,10 +613,14 @@ void build_single_residual(const pointWithCov &pv, const OctoTree *current_octo,
       J_nq.block<1, 3>(0, 3) = -plane.normal;
       double sigma_l = J_nq * plane.plane_cov * J_nq.transpose();
       sigma_l += plane.normal.transpose() * pv.cov * plane.normal;
+      if (!std::isfinite(sigma_l) || sigma_l <= 0.) return;
       if (dis_to_plane < sigma_num * sqrt(sigma_l)) {
         is_sucess = true;
-        double this_prob = 1.0 / (sqrt(sigma_l)) *
-                           exp(-0.5 * dis_to_plane * dis_to_plane / sigma_l);
+        // Rank associations by normalized innovation. The 1/sigma density
+        // factor favors some normal directions when the motion prior becomes
+        // anisotropic, even over a zero-residual plane in the containing cell.
+        // Keep the uncertainty gate here and full variance weights in the solve.
+        double this_prob = exp(-0.5 * dis_to_plane * dis_to_plane / sigma_l);
         if (this_prob > prob) {
           prob = this_prob;
           single_ptpl.point = pv.point;
@@ -770,155 +764,63 @@ void GetUpdatePlane(const OctoTree *current_octo, const int pub_max_voxel_layer,
 //   }
 // }
 
+// Search in metric coordinates. Empty containing cells still need a bounded
+// neighbor search; a scan can cross a voxel boundary with millimetres of motion.
+inline bool find_plane_match(const unordered_map<VOXEL_LOC, OctoTree *> &map,
+    double voxel_size, double sigma_num, int max_layer,
+    const pointWithCov &pv, ptpl &match) {
+  const VOXEL_LOC cell = voxel_location(pv.point_world, voxel_size);
+  bool found = false;
+  double probability = 0.;
+  auto search = [&](const VOXEL_LOC &key) {
+    auto it = map.find(key);
+    if (it != map.end())
+      build_single_residual(pv, it->second, 0, max_layer, sigma_num,
+                            found, probability, match);
+  };
+  search(cell);
+  const int dx = pv.point_world.x() < (cell.x+.5)*voxel_size ? -1 : 1;
+  const int dy = pv.point_world.y() < (cell.y+.5)*voxel_size ? -1 : 1;
+  const int dz = pv.point_world.z() < (cell.z+.5)*voxel_size ? -1 : 1;
+  // Compare the containing cell with the seven nearest adjacent cells. A
+  // plausible plane in the containing cell must not hide a better boundary
+  // match (for example, a wall point crossing into a ground-plane cell).
+  for (int mask=1; mask<8; ++mask)
+    search(VOXEL_LOC(cell.x+((mask&1)?dx:0), cell.y+((mask&2)?dy:0),
+                     cell.z+((mask&4)?dz:0)));
+  return found;
+}
+
 void BuildResidualListOMP(const unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
-                          const double voxel_size, const double sigma_num,
-                          const int max_layer,
-                          const std::vector<pointWithCov> &pv_list,
-                          std::vector<ptpl> &ptpl_list,
-                          std::vector<Eigen::Vector3d> &non_match) {
-  std::mutex mylock;
-  ptpl_list.clear();
-  std::vector<ptpl> all_ptpl_list(pv_list.size());
-  std::vector<bool> useful_ptpl(pv_list.size());
-  std::vector<size_t> index(pv_list.size());
-  for (size_t i = 0; i < index.size(); ++i) {
-    index[i] = i;
-    useful_ptpl[i] = false;
-  }
+    const double voxel_size, const double sigma_num, const int max_layer,
+    const std::vector<pointWithCov> &pv_list, std::vector<ptpl> &ptpl_list,
+    std::vector<Eigen::Vector3d> &non_match) {
+  ptpl_list.clear(); non_match.clear();
+  std::vector<ptpl> matches(pv_list.size());
+  // A byte per point avoids vector<bool>'s shared-bit writes under OpenMP.
+  std::vector<uint8_t> useful(pv_list.size(),0);
 #ifdef MP_EN
   omp_set_num_threads(MP_PROC_NUM);
 #pragma omp parallel for
 #endif
-  for (int i = 0; i < index.size(); i++) {
-    pointWithCov pv = pv_list[i];
-    float loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
-      loc_xyz[j] = pv.point_world[j] / voxel_size;
-      if (loc_xyz[j] < 0) {
-        loc_xyz[j] -= 1.0;
-      }
-    }
-    VOXEL_LOC position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
-                       (int64_t)loc_xyz[2]);
-    auto iter = voxel_map.find(position);
-    if (iter != voxel_map.end()) {
-      OctoTree *current_octo = iter->second;
-      ptpl single_ptpl;
-      bool is_sucess = false;
-      double prob = 0;
-      build_single_residual(pv, current_octo, 0, max_layer, sigma_num,
-                            is_sucess, prob, single_ptpl);
-      if (!is_sucess) {
-        VOXEL_LOC near_position = position;
-        if (loc_xyz[0] >
-            (current_octo->voxel_center_[0] + current_octo->quater_length_)) {
-          near_position.x = near_position.x + 1;
-        } else if (loc_xyz[0] < (current_octo->voxel_center_[0] -
-                                 current_octo->quater_length_)) {
-          near_position.x = near_position.x - 1;
-        }
-        if (loc_xyz[1] >
-            (current_octo->voxel_center_[1] + current_octo->quater_length_)) {
-          near_position.y = near_position.y + 1;
-        } else if (loc_xyz[1] < (current_octo->voxel_center_[1] -
-                                 current_octo->quater_length_)) {
-          near_position.y = near_position.y - 1;
-        }
-        if (loc_xyz[2] >
-            (current_octo->voxel_center_[2] + current_octo->quater_length_)) {
-          near_position.z = near_position.z + 1;
-        } else if (loc_xyz[2] < (current_octo->voxel_center_[2] -
-                                 current_octo->quater_length_)) {
-          near_position.z = near_position.z - 1;
-        }
-        auto iter_near = voxel_map.find(near_position);
-        if (iter_near != voxel_map.end()) {
-          build_single_residual(pv, iter_near->second, 0, max_layer, sigma_num,
-                                is_sucess, prob, single_ptpl);
-        }
-      }
-      if (is_sucess) {
-
-        mylock.lock();
-        useful_ptpl[i] = true;
-        all_ptpl_list[i] = single_ptpl;
-        mylock.unlock();
-      } else {
-        mylock.lock();
-        useful_ptpl[i] = false;
-        mylock.unlock();
-      }
-    }
-  }
-  for (size_t i = 0; i < useful_ptpl.size(); i++) {
-    if (useful_ptpl[i]) {
-      ptpl_list.push_back(all_ptpl_list[i]);
-    }
+  for (int i=0; i<static_cast<int>(pv_list.size()); ++i)
+    useful[i]=find_plane_match(voxel_map,voxel_size,sigma_num,max_layer,pv_list[i],matches[i]);
+  for (size_t i=0; i<pv_list.size(); ++i) {
+    if (useful[i]) ptpl_list.push_back(matches[i]);
+    else non_match.push_back(pv_list[i].point_world);
   }
 }
 
-void BuildResidualListNormal(
-    const unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
+void BuildResidualListNormal(const unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
     const double voxel_size, const double sigma_num, const int max_layer,
     const std::vector<pointWithCov> &pv_list, std::vector<ptpl> &ptpl_list,
     std::vector<Eigen::Vector3d> &non_match) {
-  ptpl_list.clear();
-  std::vector<size_t> index(pv_list.size());
-  for (size_t i = 0; i < pv_list.size(); ++i) {
-    pointWithCov pv = pv_list[i];
-    float loc_xyz[3];
-    for (int j = 0; j < 3; j++) {
-      loc_xyz[j] = pv.point_world[j] / voxel_size;
-      if (loc_xyz[j] < 0) {
-        loc_xyz[j] -= 1.0;
-      }
-    }
-    VOXEL_LOC position((int64_t)loc_xyz[0], (int64_t)loc_xyz[1],
-                       (int64_t)loc_xyz[2]);
-    auto iter = voxel_map.find(position);
-    if (iter != voxel_map.end()) {
-      OctoTree *current_octo = iter->second;
-      ptpl single_ptpl;
-      bool is_sucess = false;
-      double prob = 0;
-      build_single_residual(pv, current_octo, 0, max_layer, sigma_num,
-                            is_sucess, prob, single_ptpl);
-
-      if (!is_sucess) {
-        VOXEL_LOC near_position = position;
-        if (loc_xyz[0] >
-            (current_octo->voxel_center_[0] + current_octo->quater_length_)) {
-          near_position.x = near_position.x + 1;
-        } else if (loc_xyz[0] < (current_octo->voxel_center_[0] -
-                                 current_octo->quater_length_)) {
-          near_position.x = near_position.x - 1;
-        }
-        if (loc_xyz[1] >
-            (current_octo->voxel_center_[1] + current_octo->quater_length_)) {
-          near_position.y = near_position.y + 1;
-        } else if (loc_xyz[1] < (current_octo->voxel_center_[1] -
-                                 current_octo->quater_length_)) {
-          near_position.y = near_position.y - 1;
-        }
-        if (loc_xyz[2] >
-            (current_octo->voxel_center_[2] + current_octo->quater_length_)) {
-          near_position.z = near_position.z + 1;
-        } else if (loc_xyz[2] < (current_octo->voxel_center_[2] -
-                                 current_octo->quater_length_)) {
-          near_position.z = near_position.z - 1;
-        }
-        auto iter_near = voxel_map.find(near_position);
-        if (iter_near != voxel_map.end()) {
-          build_single_residual(pv, iter_near->second, 0, max_layer, sigma_num,
-                                is_sucess, prob, single_ptpl);
-        }
-      }
-      if (is_sucess) {
-        ptpl_list.push_back(single_ptpl);
-      } else {
-        non_match.push_back(pv.point_world);
-      }
-    }
+  ptpl_list.clear(); non_match.clear();
+  for (const auto &pv:pv_list) {
+    ptpl match;
+    if (find_plane_match(voxel_map,voxel_size,sigma_num,max_layer,pv,match))
+      ptpl_list.push_back(match);
+    else non_match.push_back(pv.point_world);
   }
 }
 

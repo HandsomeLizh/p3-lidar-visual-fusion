@@ -21,11 +21,13 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--healthy-frames',type=int,default=12);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--healthy-frames',type=int,default=12)
+    parser.add_argument('--preference',choices=['balanced','visual']);args=parser.parse_args()
     assert os.environ['ROS_DOMAIN_ID']=='73'
     out=ROOT/'results/submap_recovery_20260916';out.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='visual_output_') as temporary:
         cfg=yaml.safe_load((ROOT/'config/simulation_live.yaml').read_text())
+        if args.preference:cfg['pose_source_preference']=args.preference
         cfg['visual_continuity']={'enabled':True};cfg['stationary']['enabled']=False
         cfg['telemetry_motion']['enabled']=False;cfg['vision_gate']['recovery_frames']=3
         profile=Path(temporary)/'profile.yaml';profile.write_text(yaml.safe_dump(cfg))
@@ -88,12 +90,14 @@ def main():
             guard.registration_quality(String(data='[]'))
             np.testing.assert_allclose(guard.bridge_variance,[.05,.02])
             result=dict(passed=True,failed_lidar_frames=150,visual_outputs_during_lidar_failure=visual_outputs,
+                        pose_source_preference=guard.pose_source_preference,
                         initial_healthy_lidar_frames=args.healthy_frames,
                         diverged_ekf_did_not_override_visual=True,blackout_stops_visual=True,
                         new_epoch_requires_reference=True,lidar_recovers=True,
                         submap_global_uncertainty_preserved=True,
                         scope='ROS domain 73; synthetic frontend and EKF messages, real guard/TF transport')
             name='visual_output_verification.json' if args.healthy_frames==12 else 'visual_startup_verification.json'
+            if args.preference:name=args.preference+'_'+name
             (out/name).write_text(json.dumps(result,indent=2));print(json.dumps(result))
         finally:
             ex.shutdown();guard.destroy_node();driver.destroy_node();rclpy.try_shutdown()

@@ -25,6 +25,7 @@ def main():
     stereo=np.asarray(original['raw_stereo']['transform_right_to_left'])
     p.update(name='Rover 104 real Ouster OS1-128 + internal IMU + Galaxy stereo',
         use_imu=True,imu_mode='auto',imu_calibration_confirmed=True,
+        pose_source_preference='fused',visual_motion_information_scale=1.,
         calibration_confirmed=False,instantaneous_cloud=False,cloud_motion_compensated=False,
         deskew={'enabled':True},mapping_lidar_topic='/fusion/lidar_deskewed',
         lidar_topic='/hardware/lidar',imu_topic='/hardware/imu',
@@ -55,9 +56,10 @@ def main():
             'right_topic':'/Car/T5/Cam_Right/image_mono/mapping','compact_stereo':True,
             'clock':{'mode':'device_uptime','warmup_seconds':1.,'min_samples':80,
                      'max_jitter':.03,'max_drift':.10,'max_age':.75}})
-    p['vision_gate']['max_gap']=1.
-    p['learned_visual'].update(max_tracking_gap_sec=2.,max_processing_hz=5.)
-    p['voxelmap'].update(local_map_radius=50.,max_root_voxels=8000,
+    p['vision_gate']['max_gap']=1.5  # Accept a 1 Hz trigger with small scheduling jitter.
+    p['learned_visual'].update(max_tracking_gap_sec=2.,max_recovery_gap_sec=30.,max_processing_hz=5.)
+    p['visual_continuity'].update(enabled=True,max_gap=30.)
+    p['voxelmap'].update(max_iterations=20,local_map_radius=50.,max_root_voxels=8000,
         imu_init_seconds=1.5,imu_init_min_samples=100,
         imu_max_gap_sec=.04,imu_end_tolerance_sec=.015)
     p['dynamic_map']['enabled']=False  # Re-enable after real-sensor pose/noise validation.
