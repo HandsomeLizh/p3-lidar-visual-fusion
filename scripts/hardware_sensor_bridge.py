@@ -47,7 +47,7 @@ def main():
         nodes.append(rclpy.create_node(name+'_'+args.stream,context=context))
     source,target=nodes
     clock=SharedSensorClock(**cfg.get('clock',{}));clock_lock=threading.Lock()
-    counts=Counter();last={};arrivals={}
+    counts=Counter();last={};arrivals={};rejections={}
     keys=('imu','lidar') if args.stream=='inertial' else ('left','right')
     normalizer=StereoNormalizer(profile) if args.stream=='stereo' else None
     pubs={key:target.create_publisher(typ,topic,QoSProfile(depth=200 if key=='imu' else 2,reliability=ReliabilityPolicy.RELIABLE))
@@ -68,7 +68,7 @@ def main():
     if args.stream=='inertial' and clock_reference:
         group=MutuallyExclusiveCallbackGroup();groups.append(group)
         subs.append(source.create_subscription(Float64MultiArray,clock_reference,observe_clock,
-            QoSProfile(depth=400,reliability=ReliabilityPolicy.RELIABLE),callback_group=group))
+            QoSProfile(depth=50,reliability=ReliabilityPolicy.RELIABLE),callback_group=group))
     def receive(key,msg):
         counts[key+'_received']+=1;now=time.time();stamp=seconds(msg);arrivals[key]=now
         if stamp<=last.get(key,-1):
@@ -98,6 +98,8 @@ def main():
             pubs[key].publish(msg);last[key]=stamp;counts[key+'_forwarded']+=1
         except (ValueError,TypeError) as error:
             counts[key+'_rejected']+=1
+            rejections[key]={'reason':str(error),'raw_stamp':stamp,'wall_time':now,
+                'mapped_age_sec':now-(stamp+clock.offset) if key in ('lidar','imu') and clock.offset is not None else None}
             source.get_logger().warning(str(error),throttle_duration_sec=5)
             if clock.failure:fatal.append(clock.failure);stopping.set()
     # IMU cannot wait behind image conversion or a multi-megabyte cloud copy.
@@ -105,7 +107,7 @@ def main():
         if key not in keys:continue
         group=MutuallyExclusiveCallbackGroup();groups.append(group)
         topic=cfg[key+'_topic']
-        qos=QoSProfile(depth=400 if key=='imu' else 2,reliability=ReliabilityPolicy.BEST_EFFORT)
+        qos=QoSProfile(depth=50 if key=='imu' else 2,reliability=ReliabilityPolicy.BEST_EFFORT)
         subs.append(source.create_subscription(typ,topic,lambda m,k=key:receive(k,m),qos,callback_group=group))
     # Separate processes prevent raw stereo deserialization from holding the
     # Python GIL while a 100 Hz inertial packet waits for its callback.
@@ -115,6 +117,7 @@ def main():
     def report():
         with clock_lock:clock_status=clock.status()
         value=dict(source_domain=domains[0],target_domain=domains[1],stream=args.stream,counts=dict(counts),
+                   last_rejections=dict(rejections),
                    sensor_idle_seconds={k:time.time()-v for k,v in list(arrivals.items())},vehicle_commands_published=0,
                    raw_source_topics={k:cfg[k+'_topic'] for k in keys})
         if args.stream=='inertial':

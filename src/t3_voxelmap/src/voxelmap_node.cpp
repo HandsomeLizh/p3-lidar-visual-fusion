@@ -417,7 +417,7 @@ class VoxelMapNode : public rclcpp::Node {
             if(deskew_enabled_)valid_times.push_back(point_times.at(point_index));
         }
         if (cloud->size()<50) return;
-        bool first=last_stamp_<0;
+        bool first=frames_==0;
         if(first)solver_converged_=solution_stable_=true;
         sensor_msgs::msg::PointCloud2 endpoint;
         const sensor_msgs::msg::PointCloud2 *measurement=msg.get();
@@ -436,7 +436,13 @@ class VoxelMapNode : public rclcpp::Node {
                 imu_->predict(state_,first?scan_start:last_stamp_,stamp,false,&poses);
                 using_imu=imu_->report().using_imu;
                 if(!using_imu) {
-                    state_=before;
+                    // Keep the predictor's mode transition, but hold position
+                    // at the last measured pose. Advance the consumed scan
+                    // time: otherwise every future interval contains the same
+                    // missing IMU segment and recovery can never complete.
+                    hold_unobserved_cv(state_,accepted_state_);
+                    state_.bias_a.setZero();state_.gravity.setZero();
+                    last_stamp_=stamp;
                     std_msgs::msg::String status;
                     status.data="{\"mode\":\"waiting\",\"reason\":\"deskew_"+imu_->report().reason+"\"}";
                     imu_status_->publish(status);
