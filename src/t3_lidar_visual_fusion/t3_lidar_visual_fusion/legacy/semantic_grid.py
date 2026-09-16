@@ -443,7 +443,43 @@ class LayeredSemanticGridMap:
         ends = np.concatenate(
             (boundaries, np.array([len(order)], dtype=np.int64))
         )
-        for start, end in zip(starts, ends):
+        # Mapping contributes at most min/median/max per XY cell. Fuse those
+        # sparse groups together instead of calling NumPy thousands of times.
+        # Larger batches retain the general robust cell implementation.
+        small = (ends - starts) <= 3
+        if np.any(small):
+            offsets = np.arange(3)
+            first, sizes = starts[small], (ends - starts)[small]
+            values = z_sorted[np.minimum(first[:, None] + offsets, len(z_sorted) - 1)]
+            values = np.where(offsets < sizes[:, None], values, np.nan)
+            median = np.nanmedian(values, axis=1)
+            deviation = np.abs(values - median[:, None])
+            mad = np.nanmedian(deviation, axis=1)
+            threshold = np.maximum(self.min_elevation_mad,
+                                   self.elevation_mad_scale * 1.4826 * mad)
+            accepted = np.where(deviation <= threshold[:, None], values, np.nan)
+            counts = np.isfinite(accepted).sum(axis=1)
+            empty = counts == 0
+            accepted[empty, 0] = median[empty]
+            counts[empty] = 1
+            means = np.nansum(accepted, axis=1) / counts
+            moments = np.nansum((accepted - means[:, None]) ** 2, axis=1)
+            cells = linear_sorted[first]
+            rr, cc = cells // self.geometry.width, cells % self.geometry.width
+            old_counts = self.elevation_count[rr, cc].astype(np.float64)
+            old_means = self.elevation_mean[rr, cc].astype(np.float64)
+            old_moments = self.elevation_M2[rr, cc].astype(np.float64)
+            totals = old_counts + counts
+            delta = means - old_means
+            self.elevation_count[rr, cc] = totals
+            self.elevation_mean[rr, cc] = np.where(old_counts == 0, means,
+                old_means + delta * counts / totals)
+            self.elevation_M2[rr, cc] = np.where(old_counts == 0, moments,
+                old_moments + moments + delta * delta * old_counts * counts / totals)
+            self.elevation_min[rr, cc] = np.minimum(self.elevation_min[rr, cc], np.nanmin(accepted, axis=1))
+            self.elevation_max[rr, cc] = np.maximum(self.elevation_max[rr, cc], np.nanmax(accepted, axis=1))
+            accepted_points += int(counts.sum())
+        for start, end in zip(starts[~small], ends[~small]):
             cell = int(linear_sorted[start])
             row = int(cell // self.geometry.width)
             column = int(cell % self.geometry.width)

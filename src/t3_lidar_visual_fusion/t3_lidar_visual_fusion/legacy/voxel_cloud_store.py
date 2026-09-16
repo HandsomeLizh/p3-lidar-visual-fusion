@@ -5,6 +5,7 @@ import os
 import sqlite3
 
 import numpy as np
+from ..array_groups import unique_row_indices
 
 
 class VoxelCloudStore:
@@ -45,15 +46,14 @@ class VoxelCloudStore:
         if np.any(np.abs(scaled) >= 2**62):
             raise ValueError("Point coordinate exceeds voxel index range")
         keys = scaled.astype(np.int64)
-        _, indices = np.unique(keys, axis=0, return_index=True)
+        indices = unique_row_indices(keys)
         selected = points[indices]
         keys = keys[indices]
         before = self.connection.total_changes
         with self.connection:
             self.connection.executemany(
                 "INSERT OR IGNORE INTO voxels VALUES(?,?,?,?,?,?)",
-                ((int(k[0]), int(k[1]), int(k[2]), float(p[0]), float(p[1]), float(p[2]))
-                 for k, p in zip(keys, selected)),
+                (k + p for k, p in zip(keys.tolist(), selected.tolist())),
             )
         added = self.connection.total_changes - before
         self.count += added

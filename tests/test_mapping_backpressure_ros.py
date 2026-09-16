@@ -20,8 +20,8 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 def main():
-    assert os.environ['ROS_DOMAIN_ID']=='59'
-    result_dir=ROOT/'results/mapping_backpressure_regression_20260916';result_dir.mkdir(exist_ok=False)
+    assert os.environ['ROS_DOMAIN_ID']=='89' and os.environ['ROS_LOCALHOST_ONLY']=='1'
+    result_dir=Path(tempfile.mkdtemp(prefix='mapping_backpressure_',dir=ROOT/'results'))
     with tempfile.TemporaryDirectory(prefix='mapping_pressure_',dir=ROOT/'build') as temporary:
         output=Path(temporary)
         cfg=yaml.safe_load((ROOT/'config/fusion_motion_candidate.yaml').read_text())

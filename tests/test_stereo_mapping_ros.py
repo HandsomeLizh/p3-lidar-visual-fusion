@@ -64,7 +64,7 @@ def main():
             count=mapper.stats['stereo_cells']
             frame(1001.,False);frame(1001.5,pose_variance=1.);frame(1002.,wrong_frame=True)
             assert mapper.stats['stereo_cells']==count and mapper.stats['stereo_rejected']>=3
-            pose=Odometry();pose.header=header(1002.5,'odom');pose.pose.pose.orientation.w=1.
+            pose=Odometry();pose.header=header(1002.5,'odom');pose.child_frame_id='base_link';pose.pose.pose.orientation.w=1.
             pose.pose.covariance=(np.eye(6)*.0001).ravel().tolist();pubs['/T3/semantic/current_pose'].publish(pose);drain(.04)
             pubs['/fusion/lidar'].publish(xyz_cloud([[1.25,-.05,.6]],header(1002.5,'lidar')));drain(.3)
             frame(1003.);frame(1003.5)

@@ -3,12 +3,15 @@ import copy
 import json
 import time
 import sqlite3
+import threading
+from functools import wraps
 from collections import deque
 from pathlib import Path
 import numpy as np
 import yaml
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor,ExternalShutdownException
 from rclpy.qos import QoSProfile,DurabilityPolicy,ReliabilityPolicy,qos_profile_sensor_data
 from nav_msgs.msg import Odometry,OccupancyGrid
 from sensor_msgs.msg import PointCloud2,Image
@@ -32,14 +35,25 @@ from .legacy.voxel_cloud_store import VoxelCloudStore
 from .stereo_mapping import StereoConfirmation
 
 
+def input_locked(method):
+    @wraps(method)
+    def call(self,*args,**kwargs):
+        with self.input_lock:return method(self,*args,**kwargs)
+    return call
+
+
 class TerrainMapper(Node):
-    def __init__(self):
+    def __init__(self,concurrent_inputs=False):
         super().__init__("fusion_terrain_mapper")
         self.declare_parameter("profile_path","");self.declare_parameter("output_dir","")
         self.cfg=yaml.safe_load(Path(self.get_parameter("profile_path").value).read_text())
         self.output=Path(self.get_parameter("output_dir").value);self.output.mkdir(parents=True,exist_ok=True)
         self.poses=PoseBuffer(self.cfg.get("pose_buffer_samples",1200))
+        self.input_lock=threading.RLock()
+        self.input_node=Node('fusion_map_inputs') if concurrent_inputs else self
         self.pending=deque(maxlen=self.cfg.get("map_pending_scans",4))
+        self.stereo_pending=deque(maxlen=2)
+        self.last_processed_source=None
         self.internal=self.output/"_internal";self.internal.mkdir(exist_ok=True)
         self.grid=DiskElevationMap(self.internal/"elevation_tiles.sqlite",resolution=self.cfg["map_resolution"],
             tile_cells=self.cfg.get("tile_cells",128),max_tiles=self.cfg.get("max_resident_tiles",64),
@@ -56,27 +70,29 @@ class TerrainMapper(Node):
         self.pressure=False;self.storage_paused=False;self.last_global_wall=0.
         self.last_checkpoint_wall=time.monotonic();self.global_available=False;self.latest_window=None
         self.last_pose=None;self.last_header=None;self.last_stamps={};self.dirty=False
+        self.last_input_wall={};self.last_pose_wall=None
         self.stats={"mapped_scans":0,"dropped_scans":0,"map_points":0,"lidar_scans":0,"tof_scans":0}
         self.stereo_cfg=self.cfg.get('stereo_mapping',{})
         self.stereo_confirmation=StereoConfirmation(self.cfg['map_resolution'],self.stereo_cfg)
         self.fusion_health={};self.fusion_health_wall=-float('inf')
+        self.stereo_health_generation=0;self.stereo_processed_generation=0
         self.stats.update(stereo_scans=0,stereo_cells=0,stereo_rejected=0,
                           stereo_enabled=bool(self.stereo_cfg.get('enabled',False)),stereo_reason='waiting')
         self.bridge=CvBridge();self.mask=None
         self.camera_from_base=inverse(rigid(self.cfg["base_from_camera_left"]))
         self.tum=(self.output/"trajectory_map.tum").open("w")
         self.tum_last_offset=None
-        self.create_subscription(Odometry,"/T3/semantic/current_pose",self.odom,100)
-        self.create_subscription(PointCloud2,self.cfg.get("mapping_lidar_topic","/fusion/lidar"),lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=2,reliability=ReliabilityPolicy.RELIABLE))
+        self.input_node.create_subscription(Odometry,"/T3/semantic/current_pose",self.odom,100)
+        self.input_node.create_subscription(PointCloud2,self.cfg.get("mapping_lidar_topic","/fusion/lidar"),lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
         if self.stereo_cfg.get('enabled',False):
-            self.create_subscription(PointCloud2,self.stereo_cfg.get('topic','/fusion/stereo_points'),
+            self.input_node.create_subscription(PointCloud2,self.stereo_cfg.get('topic','/fusion/stereo_points'),
                 self.enqueue_stereo,QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
-            self.create_subscription(String,'/fusion/status',self.fusion_status,2)
+            self.input_node.create_subscription(String,'/fusion/status',self.fusion_status,2)
         for source in self.cfg.get("tof_sources",[]):
             rigid(source["base_from_sensor"])
-            self.create_subscription(PointCloud2,source["topic"],lambda m,s=source:self.enqueue(m,s["name"],s["base_from_sensor"]),qos_profile_sensor_data)
+            self.input_node.create_subscription(PointCloud2,source["topic"],lambda m,s=source:self.enqueue(m,s["name"],s["base_from_sensor"]),qos_profile_sensor_data)
         if self.cfg.get("semantic_topic"):
-            self.create_subscription(Image,self.cfg["semantic_topic"],self.semantic,1)
+            self.input_node.create_subscription(Image,self.cfg["semantic_topic"],self.semantic,1)
         qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.grid_pubs=[self.create_publisher(GridMap,t,qos) for t in
             ["/T3/mapping/elevation_map","/T3/mapping/grid_map","/Car/T3/mapping/grid_map"]]
@@ -102,50 +118,94 @@ class TerrainMapper(Node):
             self.create_service(Trigger,topic,self.save_service)
         self.get_logger().info("Terrain mapper ready: elevation GridMap and persistent LiDAR XYZ")
 
+    @input_locked
     def odom(self,msg):
         try:
             t=transform_from_pose(msg.pose.pose)
+            covariance=np.asarray(msg.pose.covariance).reshape(6,6)
+            if (msg.header.frame_id not in ('map','odom') or msg.child_frame_id!='base_link'
+                    or not np.isfinite(covariance).all()
+                    or not np.allclose(covariance,covariance.T,rtol=0,atol=1e-6)
+                    or np.linalg.eigvalsh(covariance).min()<-1e-8):
+                raise ValueError('Invalid mapping pose frame/covariance')
             appended=self.poses.append(stamp_sec(msg),t)
             revised=not appended and self.poses.replace_latest(stamp_sec(msg),t)
             if appended or revised:
-                covariance=np.asarray(msg.pose.covariance).reshape(6,6)
+                if revised:self.pose_quality.pop()
                 self.pose_quality.append((stamp_sec(msg),float(np.max(np.diag(covariance)[:3])),
                                           float(np.max(np.diag(covariance)[3:])),covariance.copy()))
                 self.last_pose=t
+                self.last_pose_wall=time.monotonic()
                 if appended:
                     self.tum_last_offset=self.tum.tell()
                 elif self.tum_last_offset is not None:
                     self.tum.seek(self.tum_last_offset);self.tum.truncate()
                 p=msg.pose.pose;q=p.orientation
                 self.tum.write(f"{stamp_sec(msg):.9f} {p.position.x:.9f} {p.position.y:.9f} {p.position.z:.9f} {q.x:.9f} {q.y:.9f} {q.z:.9f} {q.w:.9f}\n")
-        except ValueError:pass
+        except ValueError:
+            self.stats['invalid_poses']=self.stats.get('invalid_poses',0)+1
 
+    def pose_quality_at(self,stamp):
+        """Match PoseBuffer.at's time support; caller holds input_lock.
+
+        The convex covariance sum bounds the linearly interpolated endpoint
+        errors even with unknown endpoint correlation. Rotation uses the same
+        small-angle fixed-frame convention as the height Jacobian below.
+        """
+        if not self.pose_quality:return None
+        times=np.array([q[0] for q in self.pose_quality])
+        i=int(np.searchsorted(times,stamp))
+        if i<len(times) and abs(times[i]-stamp)<1e-8:return self.pose_quality[i]
+        if i==0 or i==len(times):
+            q=self.pose_quality[0 if i==0 else -1]
+            return q if abs(q[0]-stamp)<=self.cfg['pose_tolerance'] else None
+        a,b=self.pose_quality[i-1],self.pose_quality[i]
+        if b[0]-a[0]>self.cfg['pose_max_gap']:return None
+        for q in (a,b):
+            c=q[3]
+            if not np.isfinite(c).all() or np.linalg.eigvalsh((c+c.T)/2).min()<-1e-8:
+                return (stamp,float('nan'),float('nan'),c)
+        u=(stamp-a[0])/(b[0]-a[0])
+        covariance=(1-u)*a[3]+u*b[3]
+        return (stamp,float(np.max(np.diag(covariance)[:3])),
+                float(np.max(np.diag(covariance)[3:])),covariance)
+
+    @input_locked
     def fusion_status(self,msg):
         try:
             value=json.loads(msg.data)
             if not isinstance(value,dict):return
             self.fusion_health=value;self.fusion_health_wall=time.monotonic()
             if not value.get('vision_enabled') or not value.get('localization_valid'):
-                self.stereo_confirmation.clear()
+                self.stereo_health_generation+=1
         except (ValueError,TypeError):pass
 
+    @input_locked
     def enqueue_stereo(self,msg):
         if (msg.header.frame_id!='camera_left_optical' or
                 msg.width*msg.height>int(self.stereo_cfg.get('max_points',512)) or
-                len(msg.data)>int(self.stereo_cfg.get('max_points',512))*32 or
-                len(self.pending)>=max(1,self.pending.maxlen-1)):
-            self.stats['stereo_rejected']+=1;self.stats['stereo_reason']='invalid_input_or_backpressure';return
+                len(msg.data)>int(self.stereo_cfg.get('max_points',512))*32):
+            self.stats['stereo_rejected']+=1;self.stats['stereo_reason']='invalid_input';return
         self.enqueue(msg,'stereo',self.cfg['base_from_camera_left'])
 
-    def process_stereo(self,msg,pose,transform,stamp):
-        quality=min(self.pose_quality,key=lambda q:abs(q[0]-stamp)) if self.pose_quality else None
-        if (not self.fusion_health.get('vision_enabled') or not self.fusion_health.get('localization_valid') or
-                time.monotonic()-self.fusion_health_wall>1.5 or quality is None or
-                abs(quality[0]-stamp)>self.cfg['pose_tolerance'] or
-                not 0<=quality[1]<=self.stereo_cfg.get('max_position_variance',.04) or
-                not 0<=quality[2]<=self.stereo_cfg.get('max_rotation_variance',.01)):
+    @input_locked
+    def process_stereo(self,msg,pose,transform,stamp,quality):
+        if self.stereo_processed_generation!=self.stereo_health_generation:
+            self.stereo_confirmation.clear();self.stereo_processed_generation=self.stereo_health_generation
+        self.stats['stereo_pose_variance']=(dict(position=quality[1],rotation=quality[2])
+                                           if quality is not None else None)
+        reason=None
+        if not self.fusion_health.get('vision_enabled') or not self.fusion_health.get('localization_valid'):
+            reason='visual_or_localization_unqualified'
+        elif time.monotonic()-self.fusion_health_wall>1.5:reason='fusion_status_stale'
+        elif quality is None or abs(quality[0]-stamp)>self.cfg['pose_tolerance']:reason='missing_cotimed_pose_quality'
+        elif not 0<=quality[1]<=self.stereo_cfg.get('max_position_variance',.04):reason='position_uncertainty'
+        elif not 0<=quality[2]<=self.stereo_cfg.get('max_rotation_variance',.01):reason='rotation_uncertainty'
+        if reason:
             self.stereo_confirmation.clear();self.stats['stereo_rejected']+=1
-            self.stats['stereo_reason']='visual_or_pose_unqualified';return
+            reasons=self.stats.setdefault('stereo_rejection_reasons',{})
+            reasons[reason]=reasons.get(reason,0)+1
+            self.stats['stereo_reason']=reason;return
         data=cloud_arrays(msg,('x','y','z','position_variance'))
         valid=np.isfinite(data).all(axis=1)&(data[:,3]>0)&(data[:,3]<=self.stereo_cfg.get('max_point_std_m',.15)**2)
         data=data[valid];xyz=data[:,:3]
@@ -171,9 +231,16 @@ class TerrainMapper(Node):
             'known_range_cells_or_height_conflict' if len(evidence) else
             'confirming' if use.any() else 'depth_or_pose_uncertainty')
         if len(accepted):
-            self.last_header=copy.deepcopy(msg.header);self.last_header.frame_id='map'
+            self.advance_map_stamp(msg)
             self.dirty=True;self.stats['mapped_scans']+=1
 
+    def advance_map_stamp(self,msg):
+        # Independently queued sensors can finish out of timestamp order.
+        # Keep the newest integrated acquisition time, never a fresh wall time.
+        if self.last_header is None or stamp_sec(msg)>stamp_sec(self.last_header):
+            self.last_header=copy.deepcopy(msg.header);self.last_header.frame_id='map'
+
+    @input_locked
     def semantic(self,msg):
         try:
             mask=self.bridge.imgmsg_to_cv2(msg,desired_encoding="passthrough")
@@ -181,7 +248,9 @@ class TerrainMapper(Node):
                 self.mask=(stamp_sec(msg),np.asarray(mask).copy())
         except Exception:pass
 
+    @input_locked
     def enqueue(self,msg,name,transform):
+        self.last_input_wall[name]=time.monotonic()
         if self.storage_paused:
             self.stats["dropped_scans"]+=1
             return
@@ -191,20 +260,26 @@ class TerrainMapper(Node):
         stamp=stamp_sec(msg)
         if stamp<=self.last_stamps.get(name,-1):return
         self.last_stamps[name]=stamp
-        if len(self.pending)==self.pending.maxlen:
+        queue=self.stereo_pending if name=='stereo' else self.pending
+        if len(queue)==queue.maxlen:
             # Preserve the oldest scan until its pose-settle interval elapses.
             # Evicting it on every arrival can prevent any scan from ever being
             # mapped when input_hz * settle_seconds exceeds the queue capacity.
             self.stats["dropped_scans"]+=1
             self.stats["backpressure_dropped_scans"]=self.stats.get("backpressure_dropped_scans",0)+1
+            # Keep the waiting head so the settle period cannot starve mapping,
+            # but retain the latest sample in the tail instead of stale backlog.
+            if len(queue)>1 and queue[-1][2]==name:
+                queue[-1]=(time.monotonic(),msg,name,rigid(transform))
             return
-        self.pending.append((time.monotonic(),msg,name,rigid(transform)))
+        queue.append((time.monotonic(),msg,name,rigid(transform)))
 
     def add_semantics(self,points_base,points_map,stamp):
         # A task-2 label image contributes labels only at calibrated projections.
         # Unseen labels remain unknown; no geometric class is fabricated.
-        if self.mask is None or abs(self.mask[0]-stamp)>self.cfg["semantic_tolerance"]:return
-        mask=self.mask[1]
+        with self.input_lock:sample=self.mask
+        if sample is None or abs(sample[0]-stamp)>self.cfg["semantic_tolerance"]:return
+        mask=sample[1]
         pc=points_base@self.camera_from_base[:3,:3].T+self.camera_from_base[:3,3]
         k=np.asarray(self.cfg["camera_k"]).reshape(3,3).copy()
         k[0]*=mask.shape[1]/self.cfg["input_image_size"][0]
@@ -220,19 +295,49 @@ class TerrainMapper(Node):
         self.grid.add_semantics(xy,labels)
 
     def process(self):
-        if not self.pending:return
+        queues=(self.pending,self.stereo_pending) if self.last_processed_source=='stereo' else (self.stereo_pending,self.pending)
+        for queue in queues:
+            if self.process_queue(queue):break
+
+    @input_locked
+    def take_ready(self,queue):
+        if not queue:return False
         if self.storage_paused:
-            self.stats["dropped_scans"]+=len(self.pending);self.pending.clear();return
-        queued,msg,name,t_base_sensor=self.pending[0]
+            self.stats["dropped_scans"]+=len(queue);queue.clear();return False
+        # Select the newest settled sample with a usable co-timed pose. Keep
+        # unrelated sources and the not-yet-settled tail; never reset its wait
+        # on each arrival. This bounds latency without starving mapping.
+        now=time.monotonic();settle=self.cfg.get('mapping_pose_settle_sec',0.)
+        source=queue[0][2];chosen=0
+        for i,(received,message,name,_) in enumerate(queue):
+            if name=='lidar' and not (self.cfg['instantaneous_cloud'] or self.cfg.get('cloud_motion_compensated',False) or self.cfg.get('deskew',{}).get('enabled',False)):continue
+            if name==source and now-received>=settle and self.poses.at(stamp_sec(message),
+                    tolerance=self.cfg['pose_tolerance'],max_gap=self.cfg['pose_max_gap']) is not None:
+                chosen=i
+        if chosen:
+            discard=[i for i in range(chosen) if queue[i][2]==source]
+            for i in reversed(discard):del queue[i]
+            chosen-=len(discard)
+            self.stats['dropped_scans']+=len(discard)
+            self.stats['superseded_scans']=self.stats.get('superseded_scans',0)+len(discard)
+        queued,msg,name,t_base_sensor=queue[chosen]
         # A bounded settle interval lets delayed visual corrections join the
         # same measurement-time pose before a scan is permanently integrated.
         if time.monotonic()-queued<self.cfg.get("mapping_pose_settle_sec",0.):
-            return
+            return False
         stamp=stamp_sec(msg)
         point_times=None
         compensated=(self.cfg.get("cloud_motion_compensated",False) or self.cfg.get("deskew",{}).get("enabled",False))
         if name=="lidar" and not self.cfg["instantaneous_cloud"] and not compensated:
-            point_times=cloud_arrays(msg,("time",))[:,0]
+            try:
+                point_times=cloud_arrays(msg,("time",))[:,0]
+                if (not np.isfinite(point_times).all() or (point_times<0.).any()
+                        or (point_times>self.cfg.get('max_scan_duration',.2)).any()):
+                    raise ValueError('Invalid per-point scan time')
+            except (ValueError,TypeError) as error:
+                del queue[chosen];self.stats['dropped_scans']+=1
+                self.get_logger().warn('Map input rejected: '+str(error),throttle_duration_sec=5)
+                return False
         pose=self.poses.at(stamp,tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
         end_pose=pose if point_times is None or not len(point_times) else self.poses.at(
             stamp+float(np.max(point_times)),tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
@@ -242,20 +347,30 @@ class TerrainMapper(Node):
             # later in this monotonic buffer; do not block newer clouds on it.
             past_gap=bool(self.poses.samples and self.poses.samples[-1][0]>end_stamp+self.cfg["pose_tolerance"])
             if past_gap or time.monotonic()-queued>self.cfg["mapping_wait_timeout"]:
-                self.pending.popleft();self.stats["dropped_scans"]+=1
-            return
-        self.pending.popleft()
+                del queue[chosen];self.stats["dropped_scans"]+=1
+                if name=='stereo':self.stats['stereo_reason']='missing_cotimed_pose'
+            return False
+        del queue[chosen]
+        self.last_processed_source=name
+        self.stats['last_queue_wait_sec']=time.monotonic()-queued
+        return msg,name,t_base_sensor,stamp,point_times,pose,self.pose_quality_at(stamp)
+
+    def process_queue(self,queue):
+        sample=self.take_ready(queue)
+        if not sample:return False
+        msg,name,t_base_sensor,stamp,point_times,pose,quality=sample
         process_started=time.monotonic()
         try:
             if name=='stereo':
-                self.process_stereo(msg,pose,t_base_sensor,stamp)
+                self.process_stereo(msg,pose,t_base_sensor,stamp,quality)
                 self.stats['last_stereo_update_sec']=time.monotonic()-process_started
-                return
+                return True
             xyz=cloud_arrays(msg)
             good=np.isfinite(xyz).all(axis=1)
             ranges=np.linalg.norm(xyz,axis=1)
             valid=good&(ranges>=self.cfg["min_range"])&(ranges<=self.cfg["max_range"])
             xyz=xyz[valid]
+            if not len(xyz):raise ValueError('Cloud contains no usable range points')
             base=xyz@t_base_sensor[:3,:3].T+t_base_sensor[:3,3]
             points=base@pose[:3,:3].T+pose[:3,3]
             if point_times is not None:
@@ -263,14 +378,14 @@ class TerrainMapper(Node):
                 bins=np.floor(times/.005).astype(int)
                 for key in np.unique(bins):
                     use=bins==key
-                    sample=self.poses.at(stamp+float(np.mean(times[use])),
-                        tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
+                    with self.input_lock:
+                        sample=self.poses.at(stamp+float(np.mean(times[use])),
+                            tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
                     if sample is None:raise ValueError("Missing pose during LiDAR scan")
                     points[use]=base[use]@sample[:3,:3].T+sample[:3,3]
             if name=="lidar":
                 removed=np.empty((0,3))
                 dynamic=self.cfg.get('dynamic_map',{})
-                quality=min(self.pose_quality,key=lambda q:abs(q[0]-stamp)) if self.pose_quality else None
                 clear_ok=(quality is not None and abs(quality[0]-stamp)<=self.cfg['pose_tolerance']
                     and 0<=quality[1]<=dynamic.get('max_position_variance',.01)
                     and 0<=quality[2]<=dynamic.get('max_rotation_variance',.0025))
@@ -296,27 +411,28 @@ class TerrainMapper(Node):
             # Bound scan-density bias while retaining min/median/max height
             # evidence for each XY cell. The existing robust map rejects outliers.
             keys=np.floor(points[:,:2]/self.cfg["map_resolution"]).astype(np.int64)
-            order=np.lexsort((keys[:,1],keys[:,0]));ordered=keys[order]
+            order=np.lexsort((points[:,2],keys[:,1],keys[:,0]));ordered=keys[order]
             if len(order):
                 starts=np.r_[0,np.flatnonzero(np.any(np.diff(ordered,axis=0),axis=1))+1]
                 ends=np.r_[starts[1:],len(order)]
-                selected=[]
-                for a,b in zip(starts,ends):
-                    ix=order[a:b];ix=ix[np.argsort(points[ix,2])]
-                    selected.extend(ix[np.unique([0,len(ix)//2,len(ix)-1])])
-                selected=np.asarray(selected,dtype=int)
+                positions=np.column_stack([starts,starts+(ends-starts)//2,ends-1]).ravel()
+                # Positions are already sorted; keep each sample once for
+                # one- and two-point cells, preserving min/median/max order.
+                positions=positions[np.r_[True,positions[1:]!=positions[:-1]]]
+                selected=order[positions]
                 if len(selected)>self.cfg["max_elevation_points"]:
                     selected=selected[np.linspace(0,len(selected)-1,self.cfg["max_elevation_points"],dtype=int)]
                 self.grid.update_elevation_only(points_map=points[selected])
                 self.add_semantics(base[selected],points[selected],stamp)
             self.overview.update(points)
-            self.last_header=copy.deepcopy(msg.header);self.last_header.frame_id="map"
+            self.advance_map_stamp(msg)
             self.dirty=True;self.stats["mapped_scans"]+=1;self.stats["map_points"]=self.cloud.count
             self.stats["last_map_update_sec"]=time.monotonic()-process_started
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
-            self.stats["dropped_scans"]+=1
+            with self.input_lock:self.stats["dropped_scans"]+=1
             if isinstance(e,(OSError,sqlite3.Error)):self.storage_paused=True
             self.get_logger().error("Map input rejected: "+str(e),throttle_duration_sec=5)
+        return True
 
     def terrain_layers(self,m):
         layers=m.all_layers()
@@ -369,7 +485,8 @@ class TerrainMapper(Node):
         if self.pressure and time.monotonic()-getattr(self,"last_publish_wall",0)<2*self.cfg["map_publish_period"]:return
         try:
             publication_started=time.monotonic()
-            m=self.grid.extract_window(center_x=float(self.last_pose[0,3]),center_y=float(self.last_pose[1,3]),
+            with self.input_lock:pose=self.last_pose.copy()
+            m=self.grid.extract_window(center_x=float(pose[0,3]),center_y=float(pose[1,3]),
                  length_x=self.cfg["map_window"],length_y=self.cfg["map_window"])
             layers,occupancy=self.terrain_layers(m)
             local_header=copy.deepcopy(self.last_header);local_header.frame_id="odom"
@@ -482,9 +599,19 @@ class TerrainMapper(Node):
 
     def report_status(self,sample=None):
         if sample is None:sample=memory_sample(self.output)
+        with self.input_lock:
+            now=time.monotonic()
+            freshness=dict(sensor_receipt_idle_sec={k:now-v for k,v in self.last_input_wall.items()},
+                pose_receipt_idle_sec=now-self.last_pose_wall if self.last_pose_wall is not None else None,
+                pose_stamp=self.poses.samples[-1][0] if self.poses.samples else None)
+        ros_now=self.get_clock().now().nanoseconds*1e-9
+        freshness['pose_age_sec']=ros_now-freshness['pose_stamp'] if freshness['pose_stamp'] is not None else None
+        freshness['map_age_sec']=ros_now-stamp_sec(self.last_header) if self.last_header else None
         data=dict(self.stats,**self.grid.memory_stats(),**self.cloud.memory_stats(),**sample,
+            **freshness,
             stereo_pending_cells=len(self.stereo_confirmation.pending),stereo_preview_points=len(self.grid.stereo_preview),
-            pending=len(self.pending),memory_pressure=self.pressure,map_writable=not self.storage_paused,
+            pending=len(self.pending)+len(self.stereo_pending),range_pending=len(self.pending),
+            stereo_pending=len(self.stereo_pending),memory_pressure=self.pressure,map_writable=not self.storage_paused,
             global_grid_available=self.global_available,overview_resolution=self.overview.resolution,
             global_published_revision=self.last_global_revision,
             dense_persisted_revision=self.dense_writer.persisted_revision,
@@ -502,7 +629,7 @@ class TerrainMapper(Node):
         # Checkpoint only: full exports run after the mapper stops. This avoids
         # map copies and long-running SQLite read snapshots during a demo.
         checkpoint_started=time.monotonic()
-        self.tum.flush()
+        with self.input_lock:self.tum.flush()
         self.delivery.checkpoint(self.grid);self.cloud.checkpoint()
         if rclpy.ok():
             for pub in self.revision_pubs:pub.publish(UInt64(data=self.delivery.revision))
@@ -530,10 +657,10 @@ class TerrainMapper(Node):
         try:
             # ROS timers stop with /clock at bag EOF. Explicitly process queued
             # scans against already received poses before checkpointing.
-            for _ in range(len(self.pending)):
-                before=len(self.pending)
+            for _ in range(len(self.pending)+len(self.stereo_pending)):
+                before=len(self.pending)+len(self.stereo_pending)
                 self.process()
-                if len(self.pending)==before:break
+                if len(self.pending)+len(self.stereo_pending)==before:break
             # A live checkpoint may still have inputs awaiting poses. The
             # benchmark retries until pending=0 and checks scan accounting.
             self.publish()
@@ -547,10 +674,18 @@ class TerrainMapper(Node):
 
 
 def main():
-    rclpy.init();node=TerrainMapper()
+    rclpy.init();node=TerrainMapper(concurrent_inputs=True)
+    # Input callbacks stay responsive; all grid/cloud/SQLite operations remain
+    # in the creating thread. No concurrent database writes or map copies.
+    inputs=SingleThreadedExecutor();inputs.add_node(node.input_node)
+    def receive():
+        try:inputs.spin()
+        except (ExternalShutdownException,KeyboardInterrupt):pass
+    receiver=threading.Thread(target=receive,name='mapping_inputs');receiver.start()
     try:rclpy.spin(node)
     except KeyboardInterrupt:pass
     finally:
+        inputs.shutdown();receiver.join();node.input_node.destroy_node()
         try:node.save();node.report_status()
         except Exception as e:print("Final checkpoint failed:",e,flush=True)
         try:node.dense_writer.close(flush_revision=node.last_dense_revision if node.last_dense_revision>=0 else None)

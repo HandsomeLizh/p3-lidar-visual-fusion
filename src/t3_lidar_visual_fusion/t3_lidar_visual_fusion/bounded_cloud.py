@@ -2,6 +2,7 @@
 import numpy as np
 from .legacy.voxel_cloud_store import VoxelCloudStore
 from .disk_map import configure_sqlite
+from .array_groups import unique_row_indices
 
 
 class BoundedCloudStore(VoxelCloudStore):
@@ -31,7 +32,8 @@ class BoundedCloudStore(VoxelCloudStore):
         if not len(points):
             return
         keys = np.floor(points / self.preview_voxel).astype(np.int64)
-        keys, ix = np.unique(keys, axis=0, return_index=True)
+        ix = unique_row_indices(keys)
+        keys = keys[ix]
         points = points[ix]
         # Vectorized modular uint64 hash, deterministic across replay order.
         k = keys.astype(np.uint64)
@@ -47,7 +49,7 @@ class BoundedCloudStore(VoxelCloudStore):
         keys = np.concatenate([self.keys, keys])
         points = np.concatenate([self.sample, points])
         rank = np.concatenate([self.rank, rank])
-        _, ix = np.unique(keys, axis=0, return_index=True)
+        ix = unique_row_indices(keys)
         keys, points, rank = keys[ix], points[ix], rank[ix]
         if len(rank) > self.preview_cap:
             ix = np.argpartition(rank, self.preview_cap-1)[:self.preview_cap]

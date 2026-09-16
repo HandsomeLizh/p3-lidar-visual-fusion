@@ -39,6 +39,13 @@ def cloud_arrays(msg, names=("x", "y", "z")):
         raise ValueError("Truncated PointCloud2")
     if any(n not in fields or fields[n].count != 1 for n in names):
         raise ValueError("Missing scalar fields: " + str(names))
+    for name in names:
+        field=fields[name]
+        if field.datatype not in scalars:
+            raise ValueError("Unsupported PointCloud2 datatype: " + str(field.datatype))
+        size=np.dtype(scalars[field.datatype]).itemsize
+        if field.offset<0 or field.offset+size>msg.point_step:
+            raise ValueError("PointCloud2 field exceeds point_step: " + name)
     dtype = np.dtype({"names":list(names), "formats":[endian+scalars[fields[n].datatype] for n in names],
                       "offsets":[fields[n].offset for n in names], "itemsize":msg.point_step})
     a = np.ndarray((msg.height, msg.width), dtype=dtype, buffer=msg.data, strides=(msg.row_step, msg.point_step))
