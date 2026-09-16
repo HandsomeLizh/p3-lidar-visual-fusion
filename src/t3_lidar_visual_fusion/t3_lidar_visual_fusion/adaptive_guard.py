@@ -16,11 +16,13 @@ from .core import PoseBuffer, motion
 from .continuous_frame import ContinuousFrame, pose_covariance, rotate_covariance
 from .body_motion import BodyMotion
 from .stationary import StationaryDetector
+from .output_continuity import OutputContinuity
 from .odometry_guard import OdometryGuard
 from .ros_utils import stamp_sec, transform_from_pose, set_pose, cloud_arrays
 from sensor_msgs.msg import PointCloud2
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from geometry_msgs.msg import TwistWithCovarianceStamped
+from geometry_msgs.msg import TwistWithCovarianceStamped, TransformStamped
+from tf2_ros import TransformBroadcaster
 
 
 class AdaptiveGuard(OdometryGuard):
@@ -39,6 +41,8 @@ class AdaptiveGuard(OdometryGuard):
         self.visual_arrivals = deque(maxlen=12)
         lidar_config = dict(self.cfg["vision_gate"])
         lidar_config["recovery_frames"] = self.cfg.get("lidar_recovery_frames", 3)
+        lidar_config["recovery_max_step"] = self.cfg.get("lidar_recovery_max_step", 6.)
+        lidar_config["recovery_max_angle"] = self.cfg.get("lidar_recovery_max_angle", 1.)
         self.lidar_gate = ContinuousFrame(**lidar_config)
         self.lidar_gate.begin_epoch("odom")
         self.lidar_gate.alignment = np.eye(4)
@@ -47,6 +51,8 @@ class AdaptiveGuard(OdometryGuard):
         self.filtered_poses = PoseBuffer(1200)
         self.last_good_pose = None
         self.output_qualified = False
+        self.output_continuity = OutputContinuity(**self.cfg.get("output_continuity", {}))
+        self.qualified_tf = TransformBroadcaster(self)
         self.last_filtered_covariance = None
         self.filter_quality = {"reason": "waiting_for_filter"}
         self.last_lidar_usable_wall = 0.; self.last_visual_usable_wall = 0.
@@ -157,17 +163,12 @@ class AdaptiveGuard(OdometryGuard):
             if msg.child_frame_id != "base_link" or msg.header.frame_id != "odom":
                 raise ValueError("LiDAR input must describe base_link in its stable odom frame")
             transform = transform_from_pose(msg.pose.pose)
-            if self.last_lio:
-                dt = stamp-self.last_lio[0]
-                _, distance, angle = motion(self.last_lio[1], transform)
-                if dt <= 0 or distance/max(dt, 1e-6) > self.cfg["lio_max_speed"] or angle/max(dt, 1e-6) > self.cfg["lio_max_angular_speed"]:
-                    raise ValueError("LiDAR discontinuity")
+            if self.last_lio and stamp <= self.last_lio[0]:
+                raise ValueError("Nonmonotonic LiDAR input")
             covariance = pose_covariance(msg.pose.covariance)
             self.last_lio = stamp, transform.copy()
             self.last_lio_wall = time.monotonic()
             self.lidar_arrivals.append(self.last_lio_wall)
-            self.lio_poses.append(stamp, transform)
-            self.lidar_covariances.append((stamp, covariance.copy()))
             # Reject a failed registration, but retain a partial observation.
             # The EKF receives the full matrix, including the weak eigenvectors.
             if np.linalg.eigvalsh(covariance)[0] >= self.cfg.get("lidar_max_pose_variance", 100.):
@@ -175,12 +176,18 @@ class AdaptiveGuard(OdometryGuard):
                 self.lidar_gate.close("lidar_registration_unavailable")
                 self.adaptive_rejections["lidar_geometry"] += 1
                 self.process_visual(); return
-            self.lidar_covariance_reliable = self.lidar_reference_at(stamp) is not None
             # The initial scan defines the gauge; no recovery interval is lost.
             self.lidar_gate.recovery_frames = 1 if self.lidar_constraints == 0 else int(self.cfg.get("lidar_recovery_frames", 3))
             result = self.lidar_gate.accept(stamp, transform)
             if result.transform is None:
-                self.lidar_usable = False; self.process_visual(); return
+                self.lidar_usable = False; self.lidar_covariance_reliable = False
+                self.process_visual(); return
+            # Rejected raw positions must never become a visual reference or
+            # the origin of the next continuity check. The gate retains the
+            # last accepted pose independently of raw arrival bookkeeping.
+            self.lio_poses.append(stamp, transform)
+            self.lidar_covariances.append((stamp, covariance.copy()))
+            self.lidar_covariance_reliable = self.lidar_reference_at(stamp) is not None
             out = copy.deepcopy(msg); out.header.frame_id = "odom"
             set_pose(out.pose.pose, result.transform)
             out.pose.covariance = rotate_covariance(covariance, np.eye(3), self.lidar_floor).reshape(-1).tolist()
@@ -346,6 +353,15 @@ class AdaptiveGuard(OdometryGuard):
             self.filter_quality = {"reason": "invalid_filtered_pose_or_covariance"}
             return
         stamp = stamp_sec(msg)
+        if msg.header.frame_id != "odom" or msg.child_frame_id != "base_link":
+            self.output_qualified = False
+            self.filter_quality["reason"] = "invalid_filtered_frame"
+            return
+        continuity = self.output_continuity.check(stamp, transform)
+        if continuity != "qualified":
+            self.output_qualified = False
+            self.filter_quality["reason"] = continuity
+            return
         if stamp < self.last_filter_stamp:
             return
         if stamp == self.last_filter_stamp:
@@ -368,7 +384,17 @@ class AdaptiveGuard(OdometryGuard):
             self.filtered_poses.append(stamp,transform)
         self.last_good_pose = transform.copy()
         self.last_filtered_covariance = cov.copy()
+        self.output_continuity.accept(stamp, transform)
         self.output_qualified = True
+        # The map, formal odometry and RViz must use the same qualified pose.
+        # Keep acquisition time; do not rebroadcast a stale pose as fresh TF.
+        tf = TransformStamped(); tf.header = copy.deepcopy(msg.header)
+        tf.child_frame_id = msg.child_frame_id
+        tf.transform.translation.x = msg.pose.pose.position.x
+        tf.transform.translation.y = msg.pose.pose.position.y
+        tf.transform.translation.z = msg.pose.pose.position.z
+        tf.transform.rotation = copy.deepcopy(msg.pose.pose.orientation)
+        self.qualified_tf.sendTransform(tf)
 
     def status(self):
         if self.visual_source == "none":

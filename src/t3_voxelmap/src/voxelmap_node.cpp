@@ -4,6 +4,7 @@
 #include "voxel_map_util.hpp"
 #include "registration_quality.hpp"
 #include "optional_imu.hpp"
+#include "tracking_guard.hpp"
 #include <sensor_msgs/msg/imu.hpp>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
@@ -26,6 +27,11 @@ M3D skew(const V3D &p) { M3D m; m << SKEW_SYM_MATRX(p); return m; }
 
 class VoxelMapNode : public rclcpp::Node {
     StatesGroup state_;
+    StatesGroup accepted_state_;
+    TrackingLimits tracking_limits_;
+    double accepted_stamp_ = -1.;
+    size_t consecutive_failures_ = 0;
+    std::string tracking_reason_ = "initializing";
     std::unique_ptr<fusion_imu::OptionalImu> imu_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_input_;
     double imu_time_offset_ = 0., imu_future_tolerance_ = .1;
@@ -258,7 +264,11 @@ class VoxelMapNode : public rclcpp::Node {
               << ",\"solver_converged\":" << (solver_converged_?"true":"false")
               << ",\"solution_stable\":" << (solution_stable_?"true":"false")
               << ",\"last_translation_correction_m\":" << last_translation_correction_
-              << ",\"last_rotation_correction_rad\":" << last_rotation_correction_
+             << ",\"last_rotation_correction_rad\":" << last_rotation_correction_
+             << ",\"tracking_reason\":\"" << tracking_reason_ << "\""
+             << ",\"consecutive_failures\":" << consecutive_failures_
+             << ",\"estimated_speed_mps\":" << state_.vel_end.norm()
+             << ",\"position\":[" << state_.pos_end.x() << "," << state_.pos_end.y() << "," << state_.pos_end.z() << "]"
              << ",\"roots\":" << map_.size() << ",\"evicted_roots\":" << evicted_
              << ",\"failures\":" << failures_ << ",\"peak_rss_mib\":" << usage.ru_maxrss/1024. << "}";
         std::string record=text.str();record.pop_back();
@@ -289,14 +299,31 @@ class VoxelMapNode : public rclcpp::Node {
         bool first=last_stamp_<0;
         if(first)solver_converged_=solution_stable_=true;
         imu_->predict(state_,last_stamp_,stamp,first);last_stamp_=stamp;
+        const bool using_imu=imu_->report().using_imu;
+        // Never seed CV registration with an unbounded pose after a long gap.
+        if (!first && !using_imu && tracking_limits_.check(accepted_state_,state_,stamp-accepted_stamp_,false))
+            hold_unobserved_cv(state_,accepted_state_);
         PointCloudXYZI &used=first?*cloud:*down;
         std::vector<M3D> body_cov;body_cov.reserve(used.size());
         for(const auto &point:used){V3D p(point.x,point.y,point.z);if(std::abs(p.z())<1e-6)p.z()=1e-6;
             M3D c;calcBodyCov(p,range_noise_,angle_noise_,c);body_cov.push_back(c);}
         double matching=0.,solving=0.;int iterations=0;
         StatesGroup propagated=state_;
+        quality_.reset();
         bool valid=first || update(used,body_cov,matching,solving,iterations);
-        if (!valid) {state_=propagated;++failures_;}
+        tracking_reason_=valid?"tracking":"registration_failed";
+        if (valid && !first) {
+            if (const char *reason=tracking_limits_.check(accepted_state_,state_,stamp-accepted_stamp_,using_imu)) {
+                valid=false; tracking_reason_=reason;
+            }
+        }
+        if (!valid) {
+            ++failures_; ++consecutive_failures_;
+            if (!using_imu) hold_unobserved_cv(state_,accepted_state_);
+            else state_=propagated;  // Preserve calibrated real-IMU propagation/biases.
+        } else {
+            accepted_state_=state_; accepted_stamp_=stamp; consecutive_failures_=0;
+        }
         auto map_start=Clock::now();
         // Repeated scans from the same viewpoint are correlated observations.
         // Integrating all of them fills and overweights plane cells while the
@@ -335,6 +362,11 @@ public:
         plane_threshold_=declare_parameter<double>("plane_threshold",.01);
         velocity_noise_=declare_parameter<double>("velocity_noise",1.);
         omega_noise_=declare_parameter<double>("angular_velocity_noise",.5);
+        tracking_limits_.max_speed=declare_parameter<double>("tracking_max_speed",4.);
+        tracking_limits_.max_angular_speed=declare_parameter<double>("tracking_max_angular_speed",2.);
+        tracking_limits_.max_step=declare_parameter<double>("tracking_max_step",6.);
+        tracking_limits_.max_angle=declare_parameter<double>("tracking_max_angle",1.);
+        tracking_limits_.validate();
         local_radius_=declare_parameter<double>("local_map_radius",80.);
         max_layer_=declare_parameter<int>("max_layer",4);
         max_points_=declare_parameter<int>("max_points_per_cell",1000);

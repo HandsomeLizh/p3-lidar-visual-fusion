@@ -18,7 +18,7 @@ if [[ "$mode" == "monitor" ]]; then
     -r /Car/T3/metrics/frame_timing:=/fusion/learned_status "$@"
 elif [[ "$mode" == "window" ]]; then
   exec "$P3/integration_demo/rviz_window/build/t3_visual_window" \
-    "$P3/integration_demo/t3_envx_demo.rviz" "$@"
+    "$ROOT/config/p3_visual_window.rviz" "$@"
 else
   exit 2
 fi

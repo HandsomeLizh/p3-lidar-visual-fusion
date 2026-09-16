@@ -24,10 +24,11 @@ def rotate_covariance(cov, rotation, floor):
 
 class ContinuousFrame:
     def __init__(self, recovery_frames=3, max_speed=4., max_angular_speed=2.,
-                 max_step=6., max_angle=1., max_gap=6.):
+                 max_step=6., max_angle=1., max_gap=6., recovery_max_step=None, recovery_max_angle=None):
         self.recovery_frames = int(recovery_frames)
         self.max_speed, self.max_angular_speed = max_speed, max_angular_speed
         self.max_step, self.max_angle, self.max_gap = max_step, max_angle, max_gap
+        self.recovery_max_step, self.recovery_max_angle = recovery_max_step, recovery_max_angle
         self.epoch = None
         self.alignment = None
         self.previous = None
@@ -67,6 +68,9 @@ class ContinuousFrame:
             old_stamp, old = self.last_accepted
             dt = stamp - old_stamp
             _, distance, angle = motion(old, transform)
+            if ((self.recovery_max_step is not None and distance > self.recovery_max_step) or
+                (self.recovery_max_angle is not None and angle > self.recovery_max_angle)):
+                return self.close("recovery_discontinuity")
             if dt <= 0 or distance / dt > self.max_speed or angle / dt > self.max_angular_speed:
                 return self.close("pose_jump_or_nonmonotonic")
         if self.previous is not None:

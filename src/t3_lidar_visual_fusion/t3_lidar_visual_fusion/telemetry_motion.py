@@ -1,6 +1,7 @@
 """Independent, bounded velocity-only relay from the existing vehicle receiver.
 
-No vehicle command publishers, TCP connections, images, or absolute pose inputs.
+No vehicle command publishers, TCP connections, images, or position observations.
+World-frame velocity uses same-packet attitude only to rotate into body axes.
 The UE feedback timestamp is receiver time; this is not a calibrated IMU.
 """
 from collections import Counter
@@ -9,6 +10,7 @@ from pathlib import Path
 import time
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
@@ -32,27 +34,56 @@ class VelocityGate:
         self.std = np.asarray(cfg.get('standard_deviation', [.05]*3 + [.03]*3), dtype=float)
         self.linear_scale = float(cfg.get('linear_scale', 1.))
         self.angular_scale = float(cfg.get('angular_scale', 1.))
+        self.input_encoding = cfg.get('input_encoding', 'ros_body')
+        input_signs = {
+            'ros_body': [1., 1., 1., 1., 1., 1.],
+            # lunar_car_ctrl assumes LH wire vectors: it flips linear Y and
+            # angular X/Z. Undo exactly that decoder operation when the sender
+            # declares all six wire fields already use RH X-forward/Y-left/Z-up.
+            # This is decoding, not a physical mounting rotation.
+            'legacy_driver_from_flu_wire': [1., -1., 1., -1., 1., -1.],
+        }
+        if self.input_encoding not in input_signs:
+            raise ValueError('Unknown telemetry input_encoding')
+        self.input_signs = np.asarray(input_signs[self.input_encoding])
         self.rotation = np.asarray(cfg.get('base_from_feedback_rotation', np.eye(3)), dtype=float)
+        self.velocity_frame = cfg.get('velocity_frame', 'body')
+        if self.velocity_frame not in ('body', 'world'):
+            raise ValueError('velocity_frame must be body or world')
+        self.world_rotation = np.asarray(cfg.get('world_from_feedback_rotation', np.eye(3)), dtype=float)
+        self.orientation_child_from_base = np.asarray(cfg.get('orientation_child_from_base_rotation', np.eye(3)), dtype=float)
         values = [self.max_age, self.future, self.max_speed, self.max_angular, self.linear_scale, self.angular_scale]
         if (not np.isfinite(values).all() or min(values) <= 0 or self.std.shape != (6,)
                 or not np.isfinite(self.std).all() or np.any(self.std <= 0)):
             raise ValueError('Invalid telemetry velocity limits or uncertainty')
-        if (self.rotation.shape != (3,3) or not np.isfinite(self.rotation).all()
-                or not np.allclose(self.rotation@self.rotation.T,np.eye(3),atol=1e-6)
-                or not np.isclose(np.linalg.det(self.rotation),1.,atol=1e-6)):
-            raise ValueError('Feedback-to-base rotation must be a proper calibrated rotation')
+        for rotation in (self.rotation, self.world_rotation, self.orientation_child_from_base):
+            if not self.proper_rotation(rotation):
+                raise ValueError('Feedback rotations must be proper calibrated rotations')
         self.counts = Counter()
         self.last_seen = -1.
         self.last_forwarded = None
         self.pending = None
         self.reason = 'waiting_for_velocity'
 
-    def accept(self, stamp, frame, velocity, now):
+    @staticmethod
+    def proper_rotation(rotation):
+        return (rotation is not None and np.shape(rotation)==(3,3) and np.isfinite(rotation).all()
+                and np.allclose(rotation@rotation.T,np.eye(3),atol=1e-6)
+                and np.isclose(np.linalg.det(rotation),1.,atol=1e-6))
+
+    def accept(self, stamp, frame, velocity, now, world_from_body=None):
         self.counts['received'] += 1
         velocity = np.asarray(velocity, dtype=float)
+        rotation = self.rotation
+        if self.velocity_frame == 'world':
+            if not self.proper_rotation(world_from_body):
+                self.reason='missing_or_invalid_world_attitude'
+                self.counts[self.reason]+=1
+                return False
+            rotation = world_from_body.T @ self.world_rotation
         if velocity.shape == (6,):
-            velocity = velocity * np.array([self.linear_scale]*3 + [self.angular_scale]*3)
-            velocity = np.r_[self.rotation@velocity[:3],self.rotation@velocity[3:]]
+            velocity = velocity * self.input_signs * np.array([self.linear_scale]*3 + [self.angular_scale]*3)
+            velocity = np.r_[rotation@velocity[:3],rotation@velocity[3:]]
         reason = None
         if velocity.shape != (6,) or not np.isfinite(velocity).all() or not np.isfinite([stamp, now]).all():
             reason = 'nonfinite_or_malformed'
@@ -71,7 +102,8 @@ class VelocityGate:
         self.last_seen = stamp
         if self.pending is not None:
             self.counts['coalesced'] += 1
-        self.pending = (stamp, velocity.copy())
+        jacobian=np.zeros((6,6));jacobian[:3,:3]=rotation;jacobian[3:,3:]=rotation
+        self.pending = (stamp, velocity.copy(), jacobian@np.diag(self.std**2)@jacobian.T)
         self.reason = 'qualified'
         return True
 
@@ -79,7 +111,7 @@ class VelocityGate:
         sample, self.pending = self.pending, None
         if sample is None:
             return None
-        stamp, velocity = sample
+        stamp, velocity, covariance = sample
         if not -self.future <= now-stamp <= self.max_age:
             self.counts['expired_before_publish'] += 1
             self.reason = 'expired_before_publish'
@@ -88,7 +120,7 @@ class VelocityGate:
         self.counts['forwarded'] += 1
         # Inflate delayed local messages. The upstream sampling delay is unknown.
         inflation = 1. + max(0., now-stamp)/self.max_age
-        return stamp, velocity, np.diag((self.std*inflation)**2)
+        return stamp, velocity, covariance*inflation**2
 
 
 class TelemetryMotion(Node):
@@ -103,6 +135,9 @@ class TelemetryMotion(Node):
             raise ValueError('Telemetry motion must be explicitly enabled in the profile')
         if self.cfg.get('fuse_velocity', False) and not self.cfg.get('calibration_confirmed', False):
             raise ValueError('Velocity integration requires confirmed source units and body frame')
+        if (self.cfg.get('fuse_velocity', False) and self.cfg.get('velocity_frame', 'body')=='world'
+                and not self.cfg.get('world_frame_alignment_confirmed', False)):
+            raise ValueError('World velocity needs a confirmed velocity/attitude world-frame alignment')
         self.gate = VelocityGate(self.cfg)
         self.output_hz = float(self.cfg.get('max_output_hz', 25.))
         if not np.isfinite(self.output_hz) or not 1 <= self.output_hz <= 100:
@@ -115,11 +150,18 @@ class TelemetryMotion(Node):
         self.get_logger().info('Velocity-only UE telemetry assistance; receiver timestamps; no vehicle commands')
 
     def receive(self, msg):
-        # Deliberately read no fields from msg.pose or its covariance.
+        # Absolute position is never read or forwarded to the estimator.
+        # World velocities need the attitude from this same stamped packet.
+        world_from_body=None
+        if self.gate.velocity_frame=='world':
+            try:
+                q=msg.pose.pose.orientation
+                world_from_body=Rotation.from_quat([q.x,q.y,q.z,q.w]).as_matrix()@self.gate.orientation_child_from_base
+            except (ValueError,AttributeError):pass
         v, w = msg.twist.twist.linear, msg.twist.twist.angular
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec*1e-9
         self.gate.accept(stamp, msg.child_frame_id, [v.x, v.y, v.z, w.x, w.y, w.z],
-                         self.get_clock().now().nanoseconds*1e-9)
+                         self.get_clock().now().nanoseconds*1e-9,world_from_body=world_from_body)
 
     def publish_latest(self):
         sample = self.gate.take(self.get_clock().now().nanoseconds*1e-9)
@@ -139,9 +181,15 @@ class TelemetryMotion(Node):
         now = self.get_clock().now().nanoseconds*1e-9
         age = None if self.gate.last_forwarded is None else now-self.gate.last_forwarded
         data = dict(enabled=True, source='ue_vehicle_telemetry', input_topic=self.cfg.get('topic', '/car/odom'),
-                    timestamp_basis='receiver_time', absolute_pose_used=False, vehicle_commands_published=0,
+                    timestamp_basis='receiver_time', absolute_position_used=False, vehicle_commands_published=0,
+                    attitude_used_for_velocity_frame=self.gate.velocity_frame=='world',
+                    velocity_frame=self.gate.velocity_frame,
+                    world_frame_alignment_confirmed=bool(self.cfg.get('world_frame_alignment_confirmed',False)),
                     integrated_in_ekf=bool(self.cfg.get('fuse_velocity', False)),
                     calibration_confirmed=bool(self.cfg.get('calibration_confirmed', False)),
+                    input_encoding=self.gate.input_encoding,
+                    wire_frame=self.cfg.get('wire_frame', 'unspecified'),
+                    wire_frame_confirmed=bool(self.cfg.get('wire_frame_confirmed', False)),
                     linear_scale=self.gate.linear_scale, angular_scale=self.gate.angular_scale,
                     active=age is not None and 0 <= age <= self.gate.max_age,
                     age_sec=age, reason=self.gate.reason, counts=dict(self.gate.counts),

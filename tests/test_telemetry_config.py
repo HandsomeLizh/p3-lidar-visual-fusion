@@ -23,6 +23,9 @@ class TelemetryConfigTests(unittest.TestCase):
             profile.write_text(yaml.safe_dump(cfg))
             with self.assertRaises(ValueError):generate(profile,tmp/'generated')
             cfg['telemetry_motion']['calibration_confirmed']=True
+            profile.write_text(yaml.safe_dump(cfg))
+            with self.assertRaises(ValueError):generate(profile,tmp/'generated')
+            cfg['telemetry_motion']['world_frame_alignment_confirmed']=True
             profile.write_text(yaml.safe_dump(cfg));generate(profile,tmp/'generated')
             self.assertEqual(read()['twist0_config'],[False]*6+[True]*6+[False]*3)
             self.assertNotIn('/car/odom',read().values())

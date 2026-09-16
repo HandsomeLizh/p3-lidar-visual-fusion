@@ -70,5 +70,54 @@ class VelocityInputTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             VelocityGate({'base_from_feedback_rotation':[[-1,0,0],[0,1,0],[0,0,1]]})
 
+    def test_restores_all_six_flu_wire_fields_after_legacy_decoder(self):
+        # Independent fixture for the current C++ decoder's three sign changes.
+        gate=VelocityGate({'input_encoding':'legacy_driver_from_flu_wire','angular_scale':np.pi/180})
+        self.assertTrue(gate.accept(10.,'base_link',[.2,-.04,-.03,-10.,-20.,-30.],10.))
+        _,v,_=gate.take(10.)
+        np.testing.assert_allclose(v,np.r_[.2,.04,-.03,np.deg2rad([10.,-20.,30.])])
+
+    def test_legacy_decode_happens_before_mounting_rotation(self):
+        gate=VelocityGate({'input_encoding':'legacy_driver_from_flu_wire',
+            'base_from_feedback_rotation':[[0,-1,0],[1,0,0],[0,0,1]]})
+        gate.accept(10.,'base_link',[.2,-.04,-.03,-.1,-.2,-.3],10.)
+        _,v,_=gate.take(10.)
+        np.testing.assert_allclose(v,[-.04,.2,-.03,.2,.1,.3])
+
+    def test_unknown_input_encoding_is_rejected(self):
+        with self.assertRaises(ValueError):VelocityGate({'input_encoding':'unrecognized'})
+
+    def test_world_velocity_uses_current_attitude_and_rotates_uncertainty(self):
+        r=np.array([[0.,-1.,0.],[1.,0.,0.],[0.,0.,1.]])
+        gate=VelocityGate({'velocity_frame':'world','standard_deviation':[.1,.2,.3,.01,.02,.03]})
+        self.assertTrue(gate.accept(10.,'base_link',[0.,.2,0.,0.,0.,.1],10.,world_from_body=r))
+        _,v,cov=gate.take(10.)
+        np.testing.assert_allclose(v,[.2,0.,0.,0.,0.,.1],atol=1e-12)
+        np.testing.assert_allclose(np.diag(cov),np.array([.2,.1,.3,.02,.01,.03])**2)
+        for bad in [None,np.zeros((3,3)),np.diag([-1.,1.,1.])]:
+            self.assertFalse(gate.accept(11.,'base_link',[0.]*6,11.,world_from_body=bad))
+
+    def test_world_input_reads_only_orientation_not_position(self):
+        class Pose:
+            orientation=SimpleNamespace(x=0.,y=0.,z=np.sqrt(.5),w=np.sqrt(.5))
+            @property
+            def position(self):raise AssertionError('Absolute position leaked into velocity conversion')
+        message=SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=10,nanosec=0)),
+            child_frame_id='base_link',pose=SimpleNamespace(pose=Pose()),
+            twist=SimpleNamespace(twist=SimpleNamespace(linear=SimpleNamespace(x=0.,y=.2,z=0.),
+                angular=SimpleNamespace(x=0.,y=0.,z=.1))))
+        gate=VelocityGate({'velocity_frame':'world'})
+        node=SimpleNamespace(gate=gate,get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=10_000_000_000)))
+        TelemetryMotion.receive(node,message)
+        _,v,_=gate.take(10.);np.testing.assert_allclose(v,[.2,0.,0.,0.,0.,.1],atol=1e-12)
+
+    def test_p4_actor_orientation_is_a_proper_body_correction(self):
+        c=np.array([[-1.,0.,0.],[0.,0.,1.],[0.,1.,0.]])
+        gate=VelocityGate({'velocity_frame':'world','orientation_child_from_base_rotation':c.tolist()})
+        self.assertTrue(gate.proper_rotation(c))
+        # The reported child frame is rotated by C; corrected body is identity.
+        self.assertTrue(gate.accept(10.,'base_link',[.2,0.,0.,0.,0.,.1],10.,world_from_body=c@gate.orientation_child_from_base))
+        _,v,_=gate.take(10.);np.testing.assert_allclose(v,[.2,0.,0.,0.,0.,.1])
+
 
 if __name__=='__main__':unittest.main()

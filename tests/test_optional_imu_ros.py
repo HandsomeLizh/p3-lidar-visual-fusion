@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the compiled backend through ROS, plus frozen-binary no-IMU replay.
+"""Exercise the compiled backend through ROS, plus frozen healthy-prefix replay.
 
 Synthetic stationary IMU verifies availability switching; it is never used as
 accuracy evidence and never injected into any recorded-data benchmark.
@@ -26,7 +26,7 @@ from indexed_bag import groups
 
 def main():
     if os.environ.get('ROS_DOMAIN_ID')!='58':raise RuntimeError('Use isolated ROS_DOMAIN_ID=58')
-    out=ROOT/'results/optional_imu_after_fusion_repair_20260916'
+    out=ROOT/'results/lidar_drift_20260916/optional_imu_regression'
     out.mkdir(exist_ok=True)
     rclpy.init();n=Node('optional_imu_validation')
     pub=n.create_publisher(PointCloud2,'/fusion/lidar',3)
@@ -67,7 +67,8 @@ def main():
     result={}
     try:
         binary=ROOT/'install/t3_voxelmap/lib/t3_voxelmap/voxelmap_node'
-        launch('baseline',ROOT/'archive/pre_optional_imu_20260915/voxelmap_node_baseline')
+        baseline_binary=Path(os.environ.get('VOXEL_BASELINE_BINARY',str(ROOT/'archive/pre_jump_fix_20260916/voxelmap_node_baseline')))
+        launch('baseline',baseline_binary)
         launch('auto',binary,'auto');launch('off',binary,'off')
         spin(12,lambda:pub.get_subscription_count()==3)
         bag='/home/yanfa/Env_X/InterFace/bags/20260824_235238'
@@ -90,13 +91,23 @@ def main():
         baseline=array('baseline')
         assert len(baseline)==12
         deltas={k:float(np.max(np.abs(array(k)[:,:7]-baseline[:,:7]))) for k in ['auto','off']}
-        assert all(v<1e-8 for v in deltas.values()),deltas
+        # The jump repair deliberately changes failed-scan CV propagation.
+        # The healthy prefix must retain legacy poses; auto-without-IMU and
+        # explicit-off must remain identical through rejection and recovery.
+        first_rejection=next((i for i,m in enumerate(metrics['off']) if not m['valid_update']),len(baseline))
+        prefix_deltas={k:float(np.max(np.abs(array(k)[:first_rejection,:7]-baseline[:first_rejection,:7])))
+                       for k in ['auto','off']}
+        (out/'baseline_diagnostic.json').write_text(json.dumps(dict(baseline_binary=str(baseline_binary),
+            first_rejection=first_rejection,prefix_deltas=prefix_deltas,
+            pose_differences=(array('off')[:,:7]-baseline[:,:7]).tolist(),metrics=metrics),indent=2))
+        assert first_rejection>0 and all(v<1e-8 for v in prefix_deltas.values()),prefix_deltas
         auto_off_delta=float(np.max(np.abs(array('auto')-array('off'))))
         assert auto_off_delta<1e-8,auto_off_delta
         assert all(not m['imu']['mode']=='imu' for m in metrics['auto'])
-        result['recorded_no_imu_regression']=dict(frames=12,bag=bag,max_pose_difference_from_pre_imu_binary=deltas,
+        result['recorded_no_imu_regression']=dict(frames=12,bag=bag,baseline_binary=str(baseline_binary),max_pose_difference_from_baseline=deltas,
+            healthy_prefix_frames=first_rejection,healthy_prefix_max_pose_difference=prefix_deltas,
             auto_off_max_pose_covariance_difference=auto_off_delta,
-            qualification='Same raw LiDAR: poses unchanged versus pre-IMU binary; current auto/off pose and covariance identical. Published covariance intentionally changed by directional uncertainty repair. No IMU or truth published.')
+            qualification='Healthy prefix retains the legacy pose. Failed-scan propagation intentionally changed by the jump repair; current auto/off pose and covariance remain identical. No IMU or truth published in this recorded-data phase.')
         stop_all()
         for name in metrics:metrics[name].clear();poses[name].clear()
         # Independent synthetic availability test, fresh estimator and map.

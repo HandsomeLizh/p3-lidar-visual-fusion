@@ -244,6 +244,24 @@ independent_visual_min_score: 0.45
 lidar_backend: voxelmap
 voxelmap:
   threads: 2
+  voxel_size: 2.0
+  downsample_size: 0.2
+  max_iterations: 20
+  # Vehicle limits for this live deployment, independent of route/scene.
+  # The current controller limit is 0.2 m/s; retain margin for gain and latency.
+  tracking_max_speed: 1.0
+  tracking_max_angular_speed: 1.0
+  tracking_max_step: 2.0
+  tracking_max_angle: 0.75
+lidar_recovery_max_step: 2.0
+lidar_recovery_max_angle: 0.75
+output_continuity:
+  max_speed: 1.0
+  max_angular_speed: 1.0
+  max_step: 2.0
+  max_angle: 0.75
+  correction_translation: 0.25
+  correction_rotation: 0.1
 imu_mode: auto
 imu_calibration_confirmed: false
 lidar_input_basis: ros_flu
@@ -256,11 +274,20 @@ ekf_sensor_timeout: 10.0
 
 # Optional UE velocity assistance; absolute telemetry pose is never forwarded.
 # Receiver time; the driver's base_link label does not prove the velocity axes.
-# Keep integration disabled until units, all axes and timing are validated.
+# 2026-09-16: the sender reports WORLD-frame velocity, superseding the earlier
+# body-FLU assumption. Disabled pending timestamp/attitude conversion checks.
 telemetry_motion:
-  enabled: true
+  enabled: false
   fuse_velocity: false
   calibration_confirmed: false
+  input_encoding: legacy_driver_from_flu_wire
+  wire_frame: world
+  wire_frame_confirmed: true
+  velocity_frame: world
+  world_frame_alignment_confirmed: false
+  world_from_feedback_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+  # Existing P4 Actor-to-body orientation correction; does not certify velocity axes.
+  orientation_child_from_base_rotation: [[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]
   linear_scale: 1.0
   angular_scale: 0.017453292519943295
   base_from_feedback_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]

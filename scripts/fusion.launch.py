@@ -40,7 +40,7 @@ def nodes(context):
            output="screen"),
       Node(package="robot_localization",executable="ekf_node",name="ekf_filter_node",
            parameters=[str(out/"config/ekf.yaml"),{"use_sim_time":sim}],
-           remappings=[("odometry/filtered","/fusion/ekf")],output="screen"),
+           remappings=[("odometry/filtered","/fusion/ekf")]+(internal_tf if p.get("adaptive_source_selection",False) else []),output="screen"),
       Node(package="t3_lidar_visual_fusion",executable=("adaptive_guard" if p.get("adaptive_source_selection",False) else "odometry_guard"),parameters=[dict(params,output_dir=str(out))],output="screen"),
       Node(package="t3_lidar_visual_fusion",executable="terrain_mapper",
            parameters=[params,{"output_dir":str(out)}],output="screen")]

@@ -106,7 +106,7 @@ def main():
             "lidar_map":details.get("cloud_points",0)>1000,"incremental_interface":details.get("incremental_arrays_valid",False),
             "finite_poses":bool(pose) and bool(np.isfinite(np.asarray(pose)).all()),
             "consistent_frames":frames=={"odom","map"} and ("map","odom") in static_edges,
-            "only_ekf_main_tf":edges=={("odom","base_link")} and len(publishers)==1}
+            "single_main_tf_owner":edges=={("odom","base_link")} and len(publishers)==1}
     shared=sorted(set(tf_at)&set(fused_at))
     tf_position_error=max((np.linalg.norm(np.asarray(tf_at[k][:3])-fused_at[k][:3]) for k in shared),default=float("inf"))
     tf_orientation_error=max((min(np.linalg.norm(np.asarray(tf_at[k][3:])-fused_at[k][3:]),

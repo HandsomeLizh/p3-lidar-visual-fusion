@@ -75,6 +75,9 @@ def generate(profile_path, output):
          "odom1_differential":True,"odom1_relative":False,"odom1_queue_size":100,
          "odom1_pose_rejection_threshold":5.0,"odom1_twist_rejection_threshold":5.0}
     if p.get("adaptive_source_selection",False):
+        # Only qualified output may own odom->base_link. Otherwise EKF TF can
+        # move RViz even while the guard has stopped odometry/map publication.
+        ekf["publish_tf"]=False
         # Match the declared healthy sample interval. With sparse bag input,
         # premature prediction advances EKF time past the arriving cloud pose.
         # Publish measurement-time states; do not fabricate high-rate evidence.
@@ -102,6 +105,9 @@ def generate(profile_path, output):
     if telemetry.get("enabled",False) and telemetry.get("fuse_velocity",False):
         if not telemetry.get("calibration_confirmed",False):
             raise ValueError("Telemetry integration requires confirmed units and body-frame convention")
+        if (telemetry.get("velocity_frame","body")=="world" and
+                not telemetry.get("world_frame_alignment_confirmed",False)):
+            raise ValueError("World velocity integration requires confirmed velocity/attitude frame alignment")
         # Independent velocity feedback supports the existing EKF propagation.
         # Do not consume the UE absolute pose or disguise velocity as IMU data.
         ekf.update(twist0="/fusion/telemetry_twist",
