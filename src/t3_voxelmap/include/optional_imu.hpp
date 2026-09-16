@@ -18,6 +18,12 @@ struct Sample {
     V3D accel = V3D::Zero(); // m/s^2 specific force, includes gravity at rest
 };
 
+struct PoseSample {
+    double stamp;
+    M3D rotation;
+    V3D position;
+};
+
 struct Config {
     bool enabled = true, calibrated = false;
     M3D lidar_from_imu_rotation = M3D::Identity();
@@ -262,7 +268,9 @@ public:
                          std::abs(s.gravity.norm()-cfg_.gravity)<2.));
     }
 
-    void predict(StatesGroup &s,double start,double end,bool first=false) {
+    void predict(StatesGroup &s,double start,double end,bool first=false,
+                 std::vector<PoseSample> *trajectory=nullptr) {
+        if(trajectory)trajectory->clear();
         report_.samples_used=0;report_.integrated_seconds=0.;report_.using_imu=false;
         report_.reason=cfg_.enabled?"no_imu":"disabled";
         const double dt=first?.1:end-start;
@@ -277,13 +285,18 @@ public:
         if(use) {
             if(!active_)enter_imu(s,start);
             StatesGroup before=s;
-            for(size_t i=1;i<segment.size();++i)integrate(s,segment[i-1],segment[i]);
+            if(trajectory)trajectory->push_back({start,s.rot_end,s.pos_end});
+            for(size_t i=1;i<segment.size();++i) {
+                integrate(s,segment[i-1],segment[i]);
+                if(trajectory)trajectory->push_back({segment[i].stamp,s.rot_end,s.pos_end});
+            }
             if(physically_valid(s)) {
                 report_.using_imu=true;report_.reason="imu";report_.samples_used=segment.size();
                 report_.integrated_seconds=end-start;++report_.imu_scans;return;
             }
             s=before;report_.reason="invalid_prediction";
         }
+        if(trajectory)trajectory->clear();
         if(active_)leave_imu(s,start);
         predict_cv(s,dt,cfg_.cv_velocity_noise,cfg_.cv_omega_noise);++report_.cv_scans;
     }

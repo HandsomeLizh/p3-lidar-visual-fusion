@@ -58,7 +58,7 @@ def xyz_cloud(points, header, extra=None):
     msg.row_step = msg.width*msg.point_step
     msg.is_bigendian = False
     msg.is_dense = bool(np.isfinite(points).all())
-    msg.data = points.tobytes()
+    msg.data = array('B',points.tobytes())
     return msg
 
 

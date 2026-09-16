@@ -42,7 +42,8 @@ def runtime_fingerprint():
     if not runtime.is_relative_to(ROOT):
         raise RuntimeError("Python package resolves outside this workspace: " + str(runtime))
     python_files = python_parity(ROOT / "src/t3_lidar_visual_fusion/t3_lidar_visual_fusion", runtime)
-    binaries = ["install/t3_voxelmap/lib/t3_voxelmap/voxelmap_node", "install/vins/lib/vins/vins_node"]
+    binaries = ["install/t3_voxelmap/lib/t3_voxelmap/voxelmap_node", "install/vins/lib/vins/vins_node",
+                "install/t3_voxelmap/lib/t3_voxelmap/hardware_clock_reference"]
     return {"python_root": str(runtime), "python_sha256": python_files,
             "binary_sha256": {rel: sha256(ROOT / rel) for rel in binaries}}
 

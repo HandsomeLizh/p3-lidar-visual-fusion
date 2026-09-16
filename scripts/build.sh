@@ -10,4 +10,7 @@ colcon build --symlink-install --executor sequential --base-paths src \
  -DCeres_DIR="$T3_FUSION_ROOT/config/cmake/Ceres" \
  -DPython3_EXECUTABLE=/usr/bin/python3 -DPYTHON_EXECUTABLE=/usr/bin/python3
 
+# The first build creates this overlay. Reload it before checking what ROS
+# actually imports; the environment sourced above may predate the install.
+source "$T3_FUSION_ROOT/scripts/env.sh"
 /usr/bin/python3 "$T3_FUSION_ROOT/scripts/source_manifest.py" --record

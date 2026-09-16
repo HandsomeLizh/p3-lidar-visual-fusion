@@ -7,6 +7,7 @@ import signal
 import threading
 import time
 import zlib
+from array import array
 import tkinter as tk
 
 import numpy as np
@@ -22,7 +23,7 @@ from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import Image, PointCloud2, PointField
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
-from t3_semantic_mapping.lidar_mapping import pointcloud2_xyz_array
+from t3_lidar_visual_fusion.ros_utils import cloud_arrays as pointcloud2_xyz_array
 from visual_style import display_sample, expand_height_limits, height_colors, localization_status, UNKNOWN_COLOR
 
 
@@ -48,7 +49,7 @@ def colored_cloud(header, points, limits):
     fields.append(PointField(name='rgb', offset=12, datatype=PointField.UINT32, count=1))
     return PointCloud2(header=header, height=1, width=len(points), fields=fields,
                       is_bigendian=False, point_step=16, row_step=len(points)*16,
-                      data=packed.tobytes(), is_dense=True)
+                      data=array('B',packed.tobytes()), is_dense=True)
 
 
 class Monitor(Node):

@@ -1,4 +1,7 @@
 build/
+build_hardware/
+build_visual/
+install_hardware/
 install/
 log/
 logs/
@@ -10,6 +13,8 @@ __pycache__/
 
 run_state.json
 run_state.lock
+hardware_sensor_state.json
+hardware_sensors.lock
 build_manifest.json
 simulation_sources.lock
 archive/
@@ -38,3 +43,4 @@ tests/test_registration_quality
 !.env.example
 *.pem
 *.key
+symlink_install_manifest.txt

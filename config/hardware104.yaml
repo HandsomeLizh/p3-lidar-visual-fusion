@@ -1,0 +1,347 @@
+name: Rover 104 real Ouster OS1-128 + internal IMU + Galaxy stereo
+use_imu: true
+calibration_confirmed: false
+instantaneous_cloud: false
+left_topic: /Car/T5/Cam_Left/image_raw/color
+right_topic: /Car/T5/Cam_Right/image_raw/color
+lidar_topic: /hardware/lidar
+imu_topic: /hardware/imu
+lidar_input_frame: sensor_frame
+point_time_field: t
+point_time_scale: 1.0e-09
+max_scan_duration: 0.12
+input_image_size:
+- 2448
+- 2048
+output_image_size:
+- 640
+- 536
+camera_k:
+- - 2387.321863398319
+  - 0.0
+  - 1234.8338881021152
+- - 0.0
+  - 2387.321863398319
+  - 1003.643015022512
+- - 0.0
+  - 0.0
+  - 1.0
+distortion:
+- 0.025884149199444057
+- -0.17666124672006672
+- 0.0002927399919587708
+- 0.0006705681124301397
+- 0.08437054112767335
+base_from_imu:
+- - 0.99979238153889
+  - 0.0198055772211914
+  - 0.00478883365021122
+  - 0.6039307184564815
+- - -0.0198065746222999
+  - 0.999803817606889
+  - 0.000160936077148108
+  - -0.011973130239587255
+- - -0.00478470673346188
+  - -0.000255753054894124
+  - 0.999988520520035
+  - 0.6195598837916757
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_lidar:
+- - 0.99979238153889
+  - 0.0198055772211914
+  - 0.00478883365021122
+  - 0.606527746614407
+- - -0.0198065746222999
+  - 0.999803817606889
+  - 0.000160936077148108
+  - -0.00229959829348245
+- - -0.00478470673346188
+  - -0.000255753054894124
+  - 0.999988520520035
+  - 0.612012803599003
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_camera_left:
+- - 0.0214057899190667
+  - -0.46952128223562
+  - 0.88266163261227
+  - 0.529841638180579
+- - -0.99976936877462
+  - -0.0115826392781064
+  - 0.0180845715279778
+  - 0.129759135607494
+- - 0.00173246008267446
+  - -0.88284517781725
+  - -0.469660931510052
+  - 0.831680201971904
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_camera_right:
+- - 0.02960196010265713
+  - -0.46486718128813737
+  - 0.8848854319737098
+  - 0.5317593500170309
+- - -0.9995617154124617
+  - -0.014048535281274987
+  - 0.02605793042712791
+  - -0.12024275436728951
+- - 0.00031786754310755757
+  - -0.8852689661440023
+  - -0.46507930134822445
+  - 0.8348162631178212
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+stereo_max_skew: 0.01
+min_range: 0.7
+max_range: 50.0
+max_input_points: 140000
+vision_gate:
+  recovery_frames: 4
+  max_speed: 4.0
+  max_angular_speed: 2.0
+  max_step: 6.0
+  max_angle: 1.0
+  max_gap: 1.0
+min_brightness: 8.0
+min_image_features: 25
+require_vins_features: false
+min_vins_features: 15
+image_quality_tolerance: 0.15
+feature_tolerance: 4.5
+source_wall_timeout: 1.5
+lio_max_speed: 8.0
+lio_max_angular_speed: 3.0
+lio_pose_variance:
+- 0.04
+- 0.04
+- 0.04
+- 0.01
+- 0.01
+- 0.01
+vision_pose_variance:
+- 0.01
+- 0.01
+- 0.01
+- 0.005
+- 0.005
+- 0.005
+map_resolution: 0.2
+cloud_voxel_size: 0.12
+cloud_preview_points: 150000
+map_window: 64.0
+map_publish_period: 1.0
+max_elevation_points: 12000
+pose_tolerance: 0.12
+pose_max_gap: 0.6
+mapping_wait_timeout: 3.0
+tof_sources: []
+semantic_topic: /task2/seg_mask
+semantic_tolerance: 0.15
+tile_cells: 128
+max_resident_tiles: 64
+tile_cache_mib: 128
+max_query_cells: 250000
+pressure_query_cells: 160000
+global_max_cells: 1000000
+global_publish_period: 2.0
+overview_side_cells: 256
+overview_resolution: 1.0
+preview_voxel_size: 0.25
+obstacle_threshold: 65
+dynamic_map:
+  enabled: false
+  confirmations: 3
+  max_gap_sec: 8.0
+  ray_radius_m: 0.04
+  range_margin_m: 0.25
+  max_range_m: 40.0
+  max_candidates: 40000
+  max_changed_cells: 256
+  max_position_variance: 0.01
+  max_rotation_variance: 0.0025
+pose_buffer_samples: 1200
+map_pending_scans: 4
+stereo_queue_depth: 2
+max_image_bytes: 24000000
+max_cloud_bytes: 16000000
+trajectory_max_poses: 5000
+checkpoint_period: 5.0
+min_disk_free_gib: 5.0
+mapper_soft_mib: 1536
+min_system_available_mib: 2048
+process_tree_soft_mib: 6144
+process_tree_stop_mib: 8192
+lidar_cube_side: 160.0
+lidar_detection_range: 40.0
+lidar_map_voxel: 0.4
+max_slope_deg: 35.0
+max_step_m: 0.3
+require_lidar_agreement: true
+visual_pending_samples: 8
+visual_reference_wait: 0.3
+agreement_stamp_tolerance: 0.05
+agreement_pose_max_gap: 0.35
+min_image_contrast: 18.0
+min_feature_coverage: 0.2
+min_image_sharpness: 8.0
+exposure_change_threshold: 65.0
+motion_consistency:
+  translation_floor: 0.15
+  translation_ratio: 0.2
+  rotation_floor: 0.14
+  rotation_ratio: 0.2
+  min_span: 0.5
+  history_seconds: 4.0
+  max_gap: 6.0
+  capacity: 240
+visual_source: learned
+visual_odometry_topic: /fusion/learned_raw
+visual_max_age_sec: 1.5
+visual_future_tolerance_sec: 0.1
+ekf_history_seconds: 10.0
+learned_visual:
+  backend: xfeat_lighterglue
+  device: cuda
+  max_image_side: 640
+  max_keypoints: 1024
+  max_processing_hz: 5.0
+  cpu_threads: 2
+  mixed_precision: false
+  flash_attention: true
+  measure_stages: true
+  match_threshold: 0.1
+  depth_confidence: 0.9
+  width_confidence: 0.95
+  min_cosine_similarity: 0.82
+  nearest_neighbor_ratio: 0.8
+  max_normalized_image_bytes: 1048576
+  epipolar_error_px: 1.5
+  min_disparity_px: 1.5
+  min_depth_m: 0.4
+  max_depth_m: 60.0
+  stereo_reprojection_px: 1.5
+  min_stereo_points: 35
+  min_stereo_coverage: 0.12
+  min_pnp_inliers: 25
+  pnp_iterations: 150
+  pnp_reprojection_px: 2.5
+  min_pnp_ratio: 0.45
+  min_pnp_coverage: 0.15
+  min_stereo_checks: 12
+  stereo_motion_floor_m: 0.15
+  stereo_motion_depth_ratio: 0.03
+  min_stereo_motion_ratio: 0.6
+  max_tracking_gap_sec: 2.0
+  max_speed_mps: 4.0
+  max_angular_speed_rps: 2.0
+  keyframe_max_age_sec: 1.0
+  keyframe_translation_m: 0.25
+  keyframe_rotation_rad: 0.15
+  keyframe_min_tracks: 60
+visual_wall_timeout_sec: 1.5
+image_input_reliability: reliable
+lidar_input_reliability: reliable
+adaptive_source_selection: true
+lidar_recovery_frames: 3
+lidar_max_pose_variance: 100.0
+independent_visual_min_score: 0.45
+lidar_backend: voxelmap
+voxelmap:
+  threads: 2
+  voxel_size: 2.0
+  downsample_size: 0.2
+  max_iterations: 20
+  tracking_max_speed: 1.0
+  tracking_max_angular_speed: 1.0
+  tracking_max_step: 2.0
+  tracking_max_angle: 0.75
+  local_map_radius: 50.0
+  max_root_voxels: 8000
+  imu_init_seconds: 1.5
+  imu_init_min_samples: 100
+  imu_max_gap_sec: 0.04
+  imu_end_tolerance_sec: 0.015
+lidar_recovery_max_step: 2.0
+lidar_recovery_max_angle: 0.75
+output_continuity:
+  max_speed: 1.0
+  max_angular_speed: 1.0
+  max_step: 2.0
+  max_angle: 0.75
+  correction_translation: 0.25
+  correction_rotation: 0.1
+imu_mode: auto
+imu_calibration_confirmed: true
+lidar_input_basis: ouster_sensor_frame
+lidar_basis_conversion: 'XLS FRD mounting basis -> published z-up sensor_frame: D*T*D;
+  yaw mounting needs moving cross-sensor validation.'
+visual_constraint_mode: body_twist
+mapping_pose_settle_sec: 0.4
+normalized_camera_input: true
+ekf_sensor_timeout: 0.5
+telemetry_motion:
+  enabled: false
+stationary:
+  enabled: true
+  confirm_frames: 3
+  max_gap: 3.0
+cloud_motion_compensated: false
+deskew:
+  enabled: true
+mapping_lidar_topic: /fusion/lidar_deskewed
+imu_input_frame: imu_frame
+camera_k_right:
+- - 2396.741670350764
+  - 0.0
+  - 1227.070288365404
+- - 0.0
+  - 2396.741670350764
+  - 977.7270097072222
+- - 0.0
+  - 0.0
+  - 1.0
+distortion_right:
+- 0.030535495093559337
+- -0.20118007759354414
+- 0.0008548597642784781
+- -0.00037197340883430533
+- 0.12195486246369425
+hardware:
+  enabled: true
+  source_domain: 19
+  max_lidar_hz: 5.0
+  clock_reference_topic: /P3/hardware/clock_reference
+  lidar_topic: /Car/T5/OS1/points
+  imu_topic: /Car/T5/OS1/imu
+  left_topic: /Car/T5/Cam_Left/image_mono/mapping
+  right_topic: /Car/T5/Cam_Right/image_mono/mapping
+  compact_stereo: true
+  clock:
+    mode: device_uptime
+    warmup_seconds: 1.0
+    min_samples: 80
+    max_jitter: 0.03
+    max_drift: 0.1
+    max_age: 0.75
+calibration_provenance:
+  sha256:
+    /home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/config/t5_rgb10_rgb11.yaml: d4bcf7a764ea2c442bec988ccb01684983d7823adaa9759088dda7c2390342d4
+    /home/yanfa/program/Lidar2/src/ouster-ros/ouster-ros/config/192.168.19-metadata.json: a940633344af48df825e368edded6b0415ef3cf20394dfd353512173739992bc
+  imu_relative_transform: Ouster factory imu_to_sensor_transform; sensor_frame cloud
+  stereo_source: P3 measured RGB10/RGB11 K,D and right-to-left transform
+  camera_driver_info: placeholder; not used as calibration
+  mounting_unchanged_since_20260817: true
+  mounting_confirmation: User confirmed installation unchanged on 2026-09-16
+  body_mounting_status: 2026-08-17 mounting unchanged; FRD-to-FLU published-frame
+    conversion still requires projection/yaw validation
+  cross_sensor_time_status: software offset from local driver DDS publication timestamps;
+    not hardware/PTP synchronization

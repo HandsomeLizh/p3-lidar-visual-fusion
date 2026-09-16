@@ -22,7 +22,12 @@ def generate(profile_path, output):
     p["imu_calibration_confirmed"]=bool(p.get("imu_calibration_confirmed",p.get("calibration_confirmed",False)))
     if p.get("use_imu",False) and p.get("visual_source","vins")=="vins" and not p["imu_calibration_confirmed"]:
         raise ValueError("VINS IMU requires measured calibration; VoxelMap auto can continue without IMU")
-    if not p["instantaneous_cloud"] and not p.get("cloud_motion_compensated",False):
+    deskew=p.get("deskew",{}).get("enabled",False)
+    if deskew and (p["instantaneous_cloud"] or p.get("cloud_motion_compensated",False) or
+                   mode!="auto" or not p["imu_calibration_confirmed"]):
+        raise ValueError("Raw scan deskew requires calibrated real IMU and spinning input")
+    if deskew:p["mapping_lidar_topic"]="/fusion/lidar_deskewed"
+    if not p["instantaneous_cloud"] and not p.get("cloud_motion_compensated",False) and not deskew:
         raise ValueError("VoxelMap needs instantaneous or upstream motion-compensated clouds; raw spinning scans are not yet deskewed here")
     for name in ("base_from_imu","base_from_lidar"):
         t=np.asarray(p[name],dtype=float)

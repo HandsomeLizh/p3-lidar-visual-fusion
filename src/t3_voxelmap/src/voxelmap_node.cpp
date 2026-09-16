@@ -5,6 +5,8 @@
 #include "registration_quality.hpp"
 #include "optional_imu.hpp"
 #include "tracking_guard.hpp"
+#include "scan_deskew.hpp"
+#include <mutex>
 #include <sensor_msgs/msg/imu.hpp>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
@@ -37,6 +39,11 @@ class VoxelMapNode : public rclcpp::Node {
     double imu_time_offset_ = 0., imu_future_tolerance_ = .1;
     std::string imu_frame_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr imu_status_;
+    mutable std::mutex imu_mutex_;
+    rclcpp::CallbackGroup::SharedPtr imu_group_;
+    bool deskew_enabled_ = false;
+    double max_scan_duration_ = .2;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr deskewed_cloud_;
     std::unordered_map<VOXEL_LOC, OctoTree*> map_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr input_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_;
@@ -86,6 +93,7 @@ class VoxelMapNode : public rclcpp::Node {
         }
     }
     void imu_sample(const sensor_msgs::msg::Imu::ConstSharedPtr m) {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
         if(m->header.frame_id!=imu_frame_ ||
            m->angular_velocity_covariance[0]<0. ||
            m->linear_acceleration_covariance[0]<0.) {imu_->reject();return;}
@@ -98,6 +106,7 @@ class VoxelMapNode : public rclcpp::Node {
         imu_->push(sample);
     }
     std::string imu_json(double stamp) const {
+        std::lock_guard<std::mutex> lock(imu_mutex_);
         const auto &v=imu_->report();
         std::ostringstream text;
         text << std::setprecision(12) << "{\"stamp_sec\":" << stamp
@@ -287,19 +296,72 @@ class VoxelMapNode : public rclcpp::Node {
         }
         PointCloudXYZI::Ptr cloud(new PointCloudXYZI), down(new PointCloudXYZI);
         cloud->reserve(size_t(msg->width)*msg->height);
+        std::vector<double> point_times;
+        double scan_duration=0.;
+        if(deskew_enabled_) {
+            const auto field=std::find_if(msg->fields.begin(),msg->fields.end(),[](const auto &f){return f.name=="time";});
+            if(field==msg->fields.end() || field->datatype!=sensor_msgs::msg::PointField::FLOAT32) {
+                RCLCPP_ERROR(get_logger(),"Deskew needs normalized float32 time field");return;
+            }
+            for(sensor_msgs::PointCloud2ConstIterator<float> t(*msg,"time");t!=t.end();++t) {
+                if(!std::isfinite(*t)||*t<0.||*t>max_scan_duration_) {
+                    RCLCPP_ERROR(get_logger(),"Invalid per-point scan timing");return;
+                }
+                point_times.push_back(*t);scan_duration=std::max(scan_duration,double(*t));
+            }
+            if(scan_duration<=0.){RCLCPP_ERROR(get_logger(),"Raw scan has no positive duration");return;}
+        }
+        std::vector<double> valid_times;
+        size_t point_index=0;
         sensor_msgs::PointCloud2ConstIterator<float> x(*msg,"x"), y(*msg,"y"), z(*msg,"z");
-        for (;x!=x.end();++x,++y,++z) {
+        for (;x!=x.end();++x,++y,++z,++point_index) {
             V3D p(*x,*y,*z);if(!p.allFinite() || p.norm()<.5 || p.norm()>70.)continue;
             PointType point;point.x=*x;point.y=*y;point.z=*z;point.intensity=0.;point.curvature=0.;
             point.normal_x=point.normal_y=point.normal_z=0.;cloud->push_back(point);
+            if(deskew_enabled_)valid_times.push_back(point_times.at(point_index));
         }
         if (cloud->size()<50) return;
-        pcl::VoxelGrid<PointType> filter;
-        filter.setLeafSize(leaf_size_,leaf_size_,leaf_size_);filter.setInputCloud(cloud);filter.filter(*down);
         bool first=last_stamp_<0;
         if(first)solver_converged_=solution_stable_=true;
-        imu_->predict(state_,last_stamp_,stamp,first);last_stamp_=stamp;
-        const bool using_imu=imu_->report().using_imu;
+        sensor_msgs::msg::PointCloud2 endpoint;
+        const sensor_msgs::msg::PointCloud2 *measurement=msg.get();
+        bool using_imu=false;
+        {
+            std::lock_guard<std::mutex> lock(imu_mutex_);
+            if(deskew_enabled_) {
+                const double scan_start=stamp;stamp+=scan_duration;
+                if(!first && scan_start<last_stamp_-1e-6) {
+                    RCLCPP_WARN(get_logger(),"Overlapping/out-of-order scan rejected");return;
+                }
+                const StatesGroup before=state_;
+                std::vector<fusion_imu::PoseSample> poses;
+                // First scan waits for a full stationary IMU initialization
+                // window. Never treat a spinning scan as instantaneous.
+                imu_->predict(state_,first?scan_start:last_stamp_,stamp,false,&poses);
+                using_imu=imu_->report().using_imu;
+                if(!using_imu) {
+                    state_=before;
+                    std_msgs::msg::String status;
+                    status.data="{\"mode\":\"waiting\",\"reason\":\"deskew_"+imu_->report().reason+"\"}";
+                    imu_status_->publish(status);
+                    return;
+                }
+                try {deskew_scan(*cloud,valid_times,scan_start,poses);}
+                catch(const std::exception &e){state_=before;RCLCPP_ERROR(get_logger(),"%s",e.what());return;}
+                endpoint.header=msg->header;endpoint.header.stamp=rclcpp::Time(int64_t(std::llround(stamp*1e9)));
+                sensor_msgs::PointCloud2Modifier modifier(endpoint);
+                modifier.setPointCloud2FieldsByString(1,"xyz");modifier.resize(cloud->size());
+                sensor_msgs::PointCloud2Iterator<float> ox(endpoint,"x"),oy(endpoint,"y"),oz(endpoint,"z");
+                for(const auto &p:*cloud){*ox=p.x;*oy=p.y;*oz=p.z;++ox;++oy;++oz;}
+                endpoint.is_dense=true;measurement=&endpoint;
+            } else {
+                imu_->predict(state_,last_stamp_,stamp,first);
+                using_imu=imu_->report().using_imu;
+            }
+        }
+        last_stamp_=stamp;
+        pcl::VoxelGrid<PointType> filter;
+        filter.setLeafSize(leaf_size_,leaf_size_,leaf_size_);filter.setInputCloud(cloud);filter.filter(*down);
         // Never seed CV registration with an unbounded pose after a long gap.
         if (!first && !using_imu && tracking_limits_.check(accepted_state_,state_,stamp-accepted_stamp_,false))
             hold_unobserved_cv(state_,accepted_state_);
@@ -342,13 +404,18 @@ class VoxelMapNode : public rclcpp::Node {
         }
         double map_time=seconds(map_start,Clock::now());
         ++frames_;
-        publish(*msg,valid,seconds(start,Clock::now()),cloud->size(),down->size(),matching,solving,map_time,iterations);
+        publish(*measurement,valid,seconds(start,Clock::now()),cloud->size(),down->size(),matching,solving,map_time,iterations);
+        if(deskew_enabled_)deskewed_cloud_->publish(endpoint);
     }
 public:
     VoxelMapNode():Node("fusion_voxelmap") {
         const bool instantaneous=declare_parameter<bool>("instantaneous_cloud",true);
         const bool deskewed=declare_parameter<bool>("cloud_motion_compensated",false);
-        if(!instantaneous && !deskewed)
+        deskew_enabled_=declare_parameter<bool>("deskew_enabled",false);
+        max_scan_duration_=declare_parameter<double>("max_scan_duration",.2);
+        if(deskew_enabled_ && (instantaneous||deskewed||!std::isfinite(max_scan_duration_)||max_scan_duration_<=0.||max_scan_duration_>.5))
+            throw std::runtime_error("Deskew requires raw spinning scans with a bounded positive duration");
+        if(!instantaneous && !deskewed && !deskew_enabled_)
             throw std::runtime_error("VoxelMap requires instantaneous or upstream motion-compensated clouds");
         voxel_size_=declare_parameter<double>("voxel_size",3.);
         leaf_size_=declare_parameter<double>("downsample_size",.5);
@@ -385,6 +452,8 @@ public:
         if(mode!="auto" && mode!="off")throw std::runtime_error("imu_mode must be auto or off");
         imu_cfg.enabled=mode=="auto";
         imu_cfg.calibrated=declare_parameter<bool>("imu_calibration_confirmed",false);
+        if(deskew_enabled_ && (!imu_cfg.enabled||!imu_cfg.calibrated))
+            throw std::runtime_error("Raw scan deskew requires calibrated real IMU");
         auto imu_transform=declare_parameter<std::vector<double>>("base_from_imu",identity);
         if(imu_transform.size()!=16)throw std::runtime_error("base_from_imu requires 16 numbers");
         Eigen::Matrix4d base_from_imu;
@@ -419,8 +488,11 @@ public:
         if(!std::isfinite(imu_time_offset_)||imu_frame_.empty())throw std::runtime_error("Invalid IMU stamp/frame configuration");
         imu_=std::make_unique<fusion_imu::OptionalImu>(imu_cfg);
         imu_status_=create_publisher<std_msgs::msg::String>("/fusion/imu_status",10);
+        imu_group_=create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        rclcpp::SubscriptionOptions imu_options;imu_options.callback_group=imu_group_;
         if(imu_cfg.enabled)imu_input_=create_subscription<sensor_msgs::msg::Imu>("/fusion/imu",
-            rclcpp::SensorDataQoS().keep_last(capacity),std::bind(&VoxelMapNode::imu_sample,this,std::placeholders::_1));
+            rclcpp::SensorDataQoS().keep_last(capacity),std::bind(&VoxelMapNode::imu_sample,this,std::placeholders::_1),imu_options);
+        if(deskew_enabled_)deskewed_cloud_=create_publisher<sensor_msgs::msg::PointCloud2>("/fusion/lidar_deskewed",rclcpp::QoS(2).reliable());
         auto path=declare_parameter<std::string>("timing_path","");if(!path.empty())timing_.open(path);
         omp_set_num_threads(declare_parameter<int>("threads",2));
         odom_=create_publisher<nav_msgs::msg::Odometry>("/fusion/lio_raw",30);
@@ -433,4 +505,9 @@ public:
     }
     ~VoxelMapNode(){for(auto &entry:map_)free_tree(entry.second);}
 };
-int main(int argc,char**argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<VoxelMapNode>());rclcpp::shutdown();}
+int main(int argc,char**argv){
+    rclcpp::init(argc,argv);
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(),2);
+    auto node=std::make_shared<VoxelMapNode>();
+    executor.add_node(node);executor.spin();rclcpp::shutdown();
+}

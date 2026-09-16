@@ -131,7 +131,8 @@ def main():
         raise ValueError("Image perturbations require normalized learned-vision bag playback")
     (out/"profile.yaml").write_text(yaml.safe_dump(profile,sort_keys=False))
     s={"output":str(out),"domain":os.environ.get("ROS_DOMAIN_ID","57"),
-       "localhost_only":os.environ.get("ROS_LOCALHOST_ONLY","1"),"processes":{}}
+       "localhost_only":os.environ.get("ROS_LOCALHOST_ONLY","1"),
+       "cyclonedds_uri":os.environ.get("CYCLONEDDS_URI",""),"processes":{}}
     save(s)
     env=dict(os.environ)
     env["ROS_LOG_DIR"]=str(out/"ros_logs")
@@ -182,6 +183,14 @@ def main():
         spawn(s,"rviz",["bash",str(ROOT/"scripts/p3_visuals.sh"),"window",
                        str(out/"visual_runtime"),"--ros-args","-p",
                        "use_sim_time:="+str(bool(x.bag) or x.use_sim_time).lower()],display_env)
+        ui_deadline=time.monotonic()+15.
+        while time.monotonic()<ui_deadline:
+            for name in ("visuals","rviz"):
+                if not alive(s["processes"][name]):
+                    raise RuntimeError("Mapping remains active, but "+name+" exited; see "+s["processes"][name]["log"])
+            if (out/"visual_runtime/monitor_window.json").exists():break
+            time.sleep(.25)
+        else:raise RuntimeError("Mapping remains active, but the map window is not ready; see "+str(out/"visuals.log"))
     if x.capture:
         spawn(s,"capture",[str(ROOT/"scripts/capture.sh"),x.ue_host,str(out)],env)
     if x.bag:

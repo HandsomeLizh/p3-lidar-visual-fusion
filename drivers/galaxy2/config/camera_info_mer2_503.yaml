@@ -1,0 +1,33 @@
+# Reference camera calibration for Daheng MER2-503-23GC-P.
+# Resolution: 2448 x 2048 (5MP, GigE Vision color).
+#
+# NOTE: The galaxy2 node publishes a PLACEHOLDER CameraInfo computed at runtime
+#       (fx=fy=max(w,h), principal point at image center, zero distortion).
+#       Replace the values below and wire a camera_info_manager-style loader if
+#       you need real calibration intrinsics.
+image_width: 2448
+image_height: 2048
+camera_name: galaxy_mer2_503
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [2448.0, 0.0, 1224.0,
+         0.0, 2448.0, 1024.0,
+         0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0,
+         0.0, 1.0, 0.0,
+         0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [2448.0, 0.0, 1224.0, 0.0,
+         0.0, 2448.0, 1024.0, 0.0,
+         0.0, 0.0, 1.0, 0.0]

@@ -61,7 +61,7 @@ class TerrainMapper(Node):
         self.tum=(self.output/"trajectory_map.tum").open("w")
         self.tum_last_offset=None
         self.create_subscription(Odometry,"/T3/semantic/current_pose",self.odom,100)
-        self.create_subscription(PointCloud2,"/fusion/lidar",lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=2,reliability=ReliabilityPolicy.RELIABLE))
+        self.create_subscription(PointCloud2,self.cfg.get("mapping_lidar_topic","/fusion/lidar"),lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=2,reliability=ReliabilityPolicy.RELIABLE))
         for source in self.cfg.get("tof_sources",[]):
             rigid(source["base_from_sensor"])
             self.create_subscription(PointCloud2,source["topic"],lambda m,s=source:self.enqueue(m,s["name"],s["base_from_sensor"]),qos_profile_sensor_data)
@@ -165,7 +165,8 @@ class TerrainMapper(Node):
             return
         stamp=stamp_sec(msg)
         point_times=None
-        if name=="lidar" and not self.cfg["instantaneous_cloud"] and not self.cfg.get("cloud_motion_compensated",False):
+        compensated=(self.cfg.get("cloud_motion_compensated",False) or self.cfg.get("deskew",{}).get("enabled",False))
+        if name=="lidar" and not self.cfg["instantaneous_cloud"] and not compensated:
             point_times=cloud_arrays(msg,("time",))[:,0]
         pose=self.poses.at(stamp,tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
         end_pose=pose if point_times is None or not len(point_times) else self.poses.at(

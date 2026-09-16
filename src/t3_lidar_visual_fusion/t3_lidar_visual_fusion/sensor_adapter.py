@@ -1,5 +1,6 @@
 """Normalize sensor messages without generating depth from stereo."""
 from collections import deque
+from array import array
 import copy
 import json
 from pathlib import Path
@@ -8,6 +9,8 @@ import cv2
 import yaml
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data,QoSProfile,ReliabilityPolicy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, Imu, PointCloud2, PointField
@@ -48,7 +51,9 @@ class SensorAdapter(Node):
         self.imu_mode=self.cfg.get("imu_mode","auto" if self.cfg.get("use_imu",False) else "off")
         if isinstance(self.imu_mode,bool):self.imu_mode="auto" if self.imu_mode else "off"
         if self.imu_mode=="auto" or self.cfg.get("use_imu",False):
-            self.create_subscription(Imu,self.cfg["imu_topic"],self.imu,qos_profile_sensor_data)
+            self.imu_group=MutuallyExclusiveCallbackGroup()
+            self.create_subscription(Imu,self.cfg["imu_topic"],self.imu,
+                QoSProfile(depth=400,reliability=ReliabilityPolicy.BEST_EFFORT),callback_group=self.imu_group)
         self.create_timer(2.,lambda:self.status.publish(String(data=json.dumps(self.counts))))
         self.get_logger().info("Adapter ready: stereo + LiDAR; imu_mode="+self.imu_mode)
 
@@ -127,7 +132,9 @@ class SensorAdapter(Node):
             out.header=copy.deepcopy(msg.header);out.header.frame_id="lidar"
             out.height,out.width=1,len(data)
             out.fields=[PointField(name=n,offset=dtype.fields[n][1],datatype=(PointField.UINT16 if n=="ring" else PointField.FLOAT32),count=1) for n in dtype.names]
-            out.point_step=24;out.row_step=len(data)*24;out.is_dense=True;out.data=data.tobytes()
+            # ROS's sequence setter checks bytes one by one (~0.55 s/scan on
+            # the rover). A typed array takes the validated buffer fast path.
+            out.point_step=24;out.row_step=len(data)*24;out.is_dense=True;out.data=array('B',data.tobytes())
             self.cloud_pub.publish(out);self.last_cloud_stamp=t;self.counts["clouds"]+=1
         except (ValueError,TypeError) as e:
             self.counts["rejected"]+=1
@@ -152,8 +159,10 @@ class SensorAdapter(Node):
 def main():
     rclpy.init()
     node=SensorAdapter()
-    try:rclpy.spin(node)
+    executor=MultiThreadedExecutor(num_threads=2);executor.add_node(node)
+    try:executor.spin()
     except KeyboardInterrupt:pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():rclpy.shutdown()

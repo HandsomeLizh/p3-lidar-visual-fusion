@@ -4,7 +4,7 @@ import json
 import numpy as np
 from scipy.spatial.transform import Rotation
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument,OpaqueFunction,RegisterEventHandler,EmitEvent,LogInfo
+from launch.actions import DeclareLaunchArgument,OpaqueFunction,RegisterEventHandler,EmitEvent,LogInfo,ExecuteProcess
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
@@ -30,6 +30,8 @@ def nodes(context):
            parameters=[{"use_sim_time":sim,"base_from_lidar":np.asarray(p["base_from_lidar"]).reshape(-1).tolist(),
                "instantaneous_cloud":p["instantaneous_cloud"],
                "cloud_motion_compensated":p.get("cloud_motion_compensated",False),
+               "deskew_enabled":p.get("deskew",{}).get("enabled",False),
+               "max_scan_duration":p.get("max_scan_duration",.2),
                "base_from_imu":np.asarray(p["base_from_imu"]).reshape(-1).tolist(),
                "imu_mode":ParameterValue(p["imu_mode"],value_type=str),"imu_calibration_confirmed":p["imu_calibration_confirmed"],
                "timing_path":str(out/"lidar_metrics.jsonl")},
@@ -46,6 +48,7 @@ def nodes(context):
            parameters=[params,{"output_dir":str(out)}],output="screen")]
     optional_visual=[]
     optional_motion=[]
+    optional_camera=[]
     if value("external_estimates").lower()=="true":n=n[3:]
     elif p.get("visual_source","vins") in ("roma_external","none"):n.pop(2)
     elif p.get("visual_source")=="learned":
@@ -62,6 +65,18 @@ def nodes(context):
         telemetry=Node(package="t3_lidar_visual_fusion",executable="telemetry_motion",
             parameters=[dict(params,output_dir=str(out))],output="screen")
         n.append(telemetry);optional_motion.append(telemetry)
+    if p.get("hardware",{}).get("enabled",False):
+        if sim:raise ValueError("Live hardware bridge cannot use simulation time")
+        hardware=p['hardware']
+        if hardware.get('clock_reference_topic'):
+            n.append(Node(package='t3_voxelmap',executable='hardware_clock_reference',
+                parameters=[{'imu_topic':hardware['imu_topic'],'output_topic':hardware['clock_reference_topic']}],
+                additional_env={'ROS_DOMAIN_ID':str(hardware['source_domain'])},output='screen'))
+        for stream in ('inertial','stereo'):
+            bridge=ExecuteProcess(cmd=['/usr/bin/python3',str(ROOT/'scripts/hardware_sensor_bridge.py'),
+                '--profile',str(profile),'--output',str(out),'--stream',stream],output='screen')
+            n.append(bridge)
+            if stream=='stereo':optional_camera.append(bridge)
     transforms=[("map","odom",np.eye(4)),("base_link","lidar",np.asarray(p["base_from_lidar"])),
         ("base_link","imu",np.asarray(p["base_from_imu"])),
         ("base_link","camera_left_optical",np.asarray(p["base_from_camera_left"])),
@@ -75,13 +90,16 @@ def nodes(context):
                       name="fusion_static_"+child,arguments=args,output="screen"))
     core_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,
         on_exit=[EmitEvent(event=Shutdown(reason="Critical LiDAR/fusion/map component exited"))]))
-         for node in n if node not in optional_visual+optional_motion]
+         for node in n if node not in optional_visual+optional_motion+optional_camera]
     visual_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,on_exit=visual_exited))
         for node in optional_visual]
     motion_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,
         on_exit=[LogInfo(msg="Telemetry relay exited; continuing LiDAR/visual fusion without fresh velocity assistance")]))
         for node in optional_motion]
-    return n+core_handlers+visual_handlers+motion_handlers
+    camera_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,
+        on_exit=[LogInfo(msg="Stereo bridge exited; continuing with LiDAR and IMU")]))
+        for node in optional_camera]
+    return n+core_handlers+visual_handlers+motion_handlers+camera_handlers
 
 
 def generate_launch_description():
