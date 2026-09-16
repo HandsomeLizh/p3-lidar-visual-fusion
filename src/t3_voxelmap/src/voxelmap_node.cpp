@@ -38,6 +38,10 @@ class VoxelMapNode : public rclcpp::Node {
     double last_stamp_ = -1.;
     double voxel_size_, leaf_size_, range_noise_, angle_noise_, plane_threshold_;
     double velocity_noise_, omega_noise_, local_radius_;
+    double map_keyframe_translation_, map_keyframe_rotation_;
+    Eigen::Matrix3d last_map_rotation_ = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d last_map_position_ = Eigen::Vector3d::Zero();
+    size_t map_keyframes_ = 0;
     int max_layer_, max_points_, max_iterations_, max_roots_, max_input_;
     std::vector<int> layer_size_;
     Eigen::Matrix4d base_from_lidar_;
@@ -250,6 +254,7 @@ class VoxelMapNode : public rclcpp::Node {
              << ",\"raw_points\":" << raw << ",\"downsampled_points\":" << down
              << ",\"matching_sec\":" << matching << ",\"solve_sec\":" << solving
               << ",\"map_update_sec\":" << map_time << ",\"iterations\":" << iterations
+              << ",\"map_keyframes\":" << map_keyframes_
               << ",\"solver_converged\":" << (solver_converged_?"true":"false")
               << ",\"solution_stable\":" << (solution_stable_?"true":"false")
               << ",\"last_translation_correction_m\":" << last_translation_correction_
@@ -293,12 +298,20 @@ class VoxelMapNode : public rclcpp::Node {
         bool valid=first || update(used,body_cov,matching,solving,iterations);
         if (!valid) {state_=propagated;++failures_;}
         auto map_start=Clock::now();
-        if(valid){
+        // Repeated scans from the same viewpoint are correlated observations.
+        // Integrating all of them fills and overweights plane cells while the
+        // vehicle waits. Still register every scan; insert only new viewpoints.
+        const bool new_viewpoint = first ||
+            (state_.pos_end-last_map_position_).norm() >= map_keyframe_translation_ ||
+            Eigen::AngleAxisd(last_map_rotation_.transpose()*state_.rot_end).angle() >= map_keyframe_rotation_;
+        if(valid && new_viewpoint){
             auto world=points_with_cov(used,body_cov,true);
             std::sort(world.begin(),world.end(),[](const pointWithCov&a,const pointWithCov&b){return a.cov.trace()<b.cov.trace();});
             if(first)buildVoxelMap(world,voxel_size_,max_layer_,layer_size_,max_points_,max_points_,plane_threshold_,map_);
             else updateVoxelMap(world,voxel_size_,max_layer_,layer_size_,max_points_,max_points_,plane_threshold_,map_);
             bound_map();
+            last_map_position_=state_.pos_end;last_map_rotation_=state_.rot_end;
+            ++map_keyframes_;
         }
         double map_time=seconds(map_start,Clock::now());
         ++frames_;
@@ -314,6 +327,11 @@ public:
         leaf_size_=declare_parameter<double>("downsample_size",.5);
         range_noise_=declare_parameter<double>("range_noise",.04);
         angle_noise_=declare_parameter<double>("angle_noise",.1);
+        map_keyframe_translation_=declare_parameter<double>("map_keyframe_translation",.1);
+        map_keyframe_rotation_=declare_parameter<double>("map_keyframe_rotation_deg",1.)/57.29577951308232;
+        if(!std::isfinite(map_keyframe_translation_) || map_keyframe_translation_<0. ||
+           !std::isfinite(map_keyframe_rotation_) || map_keyframe_rotation_<0.)
+            throw std::runtime_error("Map keyframe thresholds must be finite and non-negative");
         plane_threshold_=declare_parameter<double>("plane_threshold",.01);
         velocity_noise_=declare_parameter<double>("velocity_noise",1.);
         omega_noise_=declare_parameter<double>("angular_velocity_noise",.5);

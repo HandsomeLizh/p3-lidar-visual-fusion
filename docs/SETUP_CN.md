@@ -24,7 +24,17 @@ Ceres 配置优先查找本目录 `deps/root/usr` 中的原 P3 依赖，再查�
 
 ## 原 P3 集成依赖
 
-`start_simulation_sources.sh` 调用原 P3 的 `envx_runtime/start_capture.sh`、`start_car.sh` 和 `start_gui.sh`。默认原项目位于同级 `roma_t3_algorithm_bundle_20260825` 目录；可用 `P3_RUNTIME_ROOT` 指向另一处 `envx_runtime`。
+`start_simulation_sources.sh` 通过本仓库 `scripts/start_capture_source.sh` 启动采集，并使用原 `start_car.sh` 和 `start_gui.sh`。默认原项目位于同级 `roma_t3_algorithm_bundle_20260825` 目录；可用 `P3_RUNTIME_ROOT` 指向另一处 `envx_runtime`。新启动采集的请求上限由 `P3_CAPTURE_HZ` 设置，默认 2 Hz；`P3_CAPTURE_BATCH_GAP` 默认 0 秒。现有全量回传仍受 UE 和链路吞吐限制。
+
+可选的接收端优化，在本目录复制和编译 capture，不修改共享 P3：
+
+```bash
+./scripts/build_capture_transport.sh
+```
+
+需要原 runtime 的 `src/sensor_capture_ros2` 源码、已安装的消息依赖和 CMake/OpenCV 开发环境。原源码结构变化时补丁检查会报错，需人工核对后适配。构建后的二进制位于 `install/capture_transport/`，记录位于 `build/capture_transport/source.json`，启动时校验二进制摘要。`vendor/`、`build/`、`install/` 不提交仓库。
+
+采集启动脚本默认优先使用该副本，尚未构建时使用原二进制。设置 `P3_CAPTURE_OPTIMIZED=0` 可为下次新启动选择原版，`=1` 则要求优化版已构建，默认 `auto` 自动选择。已有采集进程继续复用，需要在原终端结束采集后选择版本。当前远程机器已构建并启用优化版。
 
 定制可视化通过 `scripts/p3_visuals.sh` 和 `scripts/p3_visual_monitor.py` 复用原 P3 的 `integration_demo`、RViz 插件及已编译窗口；当前默认位置是 `/home/yanfa/P3/roma_t3_algorithm_bundle_20260825`。更换机器时需部署该外部工程并调整这两个文件中的路径。算法源码及标准 ROS 输出在本仓库内，原 P3 控制与可视化工程不重复打包。
 

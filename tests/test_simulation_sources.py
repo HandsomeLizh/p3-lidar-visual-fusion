@@ -27,9 +27,11 @@ with tempfile.TemporaryDirectory(prefix='source_launcher_', dir=ROOT/'results') 
     root.mkdir()
     runtime = root.parent/'roma_t3_algorithm_bundle_20260825/envx_runtime'
     (runtime/'install').mkdir(parents=True)
+    (root/'scripts').mkdir()
     (runtime/'install/setup.bash').touch()
     for _, (_, script_name, _, _) in namespace['SERVICES'].items():
-        (runtime/script_name).write_text(
+        script_path = (root/'scripts' if script_name == 'start_capture_source.sh' else runtime)/script_name
+        script_path.write_text(
             '#!/usr/bin/env bash\n'
             'printf "%s %s %s" "$ROS_DOMAIN_ID" "$ROS_LOCALHOST_ONLY" "$RMW_IMPLEMENTATION" > "${0}.ready"\n'
             'exec sleep 60\n')
@@ -54,6 +56,8 @@ with tempfile.TemporaryDirectory(prefix='source_launcher_', dir=ROOT/'results') 
         # Each command-line invocation owns a distinct workspace/session in this fixture.
         case_root = root.parent/('case_'+str(reuse_capture))
         case_root.mkdir()
+        (case_root/'scripts').mkdir()
+        (case_root/'scripts/start_capture_source.sh').write_text((root/'scripts/start_capture_source.sh').read_text())
         for spec in namespace['SERVICES'].values():
             (runtime/(spec[1]+'.ready')).unlink(missing_ok=True)
         spawned = []
@@ -81,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='source_launcher_', dir=ROOT/'results') 
         def interrupt_after_start(delay):
             if delay == 1:
                 deadline = time.monotonic()+3
-                ready_paths = [runtime/(namespace['SERVICES'][name][1]+'.ready') for name, _ in spawned]
+                ready_paths = [(case_root/'scripts' if name == 'sensor_capture_node' else runtime)/(namespace['SERVICES'][name][1]+'.ready') for name, _ in spawned]
                 while not all(path.exists() for path in ready_paths) and time.monotonic() < deadline:
                     real_sleep(.02)
                 assert all(path.read_text() == '10 0 rmw_cyclonedds_cpp' for path in ready_paths)

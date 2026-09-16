@@ -2,7 +2,7 @@
 import unittest
 import numpy as np
 from scipy.spatial.transform import Rotation
-from t3_lidar_visual_fusion.motion_consistency import MotionConsistency
+from t3_lidar_visual_fusion.motion_consistency import MotionConsistency, increment_covariance
 from t3_lidar_visual_fusion.core import PoseBuffer
 
 
@@ -41,6 +41,34 @@ class ConsistencyTests(unittest.TestCase):
         buf=PoseBuffer();buf.append(1.,pose(0));buf.append(5.,pose(1))
         np.testing.assert_allclose(buf.at(5.,max_gap=.2),pose(1))
         self.assertIsNone(buf.at(3.,max_gap=.2))
+
+    def test_uncertain_lidar_lateral_motion_does_not_veto_good_vision(self):
+        cov=np.diag([1e-4,.04,1e-4,1e-5,1e-5,1e-5])
+        check=MotionConsistency(min_span=.1)
+        check.check(0.,pose(),pose(),cov)
+        result=check.check(1.,pose(.1),pose(.1,.5),cov)
+        self.assertTrue(result.ready)
+        self.assertAlmostEqual(result.translation_error,.5)
+        # The same disagreement in a measured direction is still rejected.
+        check.reset();check.check(0.,pose(),pose(),cov)
+        result=check.check(1.,pose(.6),pose(.1),cov)
+        self.assertEqual(result.reason,"visual_lidar_disagreement")
+
+    def test_directional_margin_is_invariant_to_map_rotation(self):
+        world=pose(100.,-300.,1.1)
+        rotate=np.zeros((6,6));rotate[:3,:3]=world[:3,:3];rotate[3:,3:]=world[:3,:3]
+        cov=rotate@np.diag([1e-4,.04,1e-4,1e-5,1e-5,1e-5])@rotate.T
+        check=MotionConsistency(min_span=.1)
+        check.check(0.,pose(),world,cov)
+        self.assertTrue(check.check(1.,pose(.1),world@pose(.1,.5),cov).ready)
+        check.reset();check.check(0.,pose(),world,cov)
+        self.assertEqual(check.check(1.,pose(.6),world@pose(.1),cov).reason,"visual_lidar_disagreement")
+
+    def test_orientation_uncertainty_propagates_to_relative_translation(self):
+        cov=np.diag([.01]*3+[.001,.001,.04])
+        result=increment_covariance(pose(),pose(2.),cov,cov)
+        self.assertAlmostEqual(result[1,1],.02+4*.04)
+        self.assertGreaterEqual(np.linalg.eigvalsh(result)[0],0.)
 
 
 if __name__=="__main__":unittest.main()

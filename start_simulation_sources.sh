@@ -15,7 +15,7 @@ import time
 DOMAIN = '10'
 HOST = '192.168.10.22'
 SERVICES = {
-    'sensor_capture_node': ('capture', 'start_capture.sh', ['--host', HOST], '6665'),
+    'sensor_capture_node': ('capture', 'start_capture_source.sh', ['--host', HOST], '6665'),
     'lunar_car_node': ('车辆控制', 'start_car.sh', [HOST, '6668', 'false'], '6668'),
     'lunar_car_gui': ('车辆控制窗口', 'start_gui.sh', [], None),
 }
@@ -37,6 +37,7 @@ def snapshot():
             params = dict(s.split(':=', 1) for s in argv if ':=' in s)
             found[name].append(dict(pid=int(directory.name), domain=env.get('ROS_DOMAIN_ID', '0'),
                 host=params.get('tcp_host'), port=params.get('tcp_port'),
+                capture_hz=params.get('capture_freq'), batch_gap=params.get('batch_interval', '1.0'),
                 localhost=env.get('ROS_LOCALHOST_ONLY', '0')))
         except (OSError, ValueError, IndexError):
             continue
@@ -93,13 +94,18 @@ def main(root, check_only=False):
     for name, (label, _, _, _) in SERVICES.items():
         print(f'[复用] {label} PID {found[name][0]["pid"]}，ROS 域 {DOMAIN}' if found[name]
               else f'[未运行] {label}', flush=True)
+        if name == 'sensor_capture_node' and found[name]:
+            p = found[name][0]
+            print(f'  采集请求上限 {p.get("capture_hz", "未知")} Hz，额外批次间隔 {p.get("batch_gap", "未知")} 秒；实际频率取决于 UE 和传输耗时。', flush=True)
     if check_only:
         return 0 if all(found.values()) else 1
     if all(found.values()):
         print('采集、车辆控制和控制窗口已运行，可直接启动实时建图。', flush=True)
         return 0
     runtime = Path(os.environ.get('P3_RUNTIME_ROOT', str(root.parent/'roma_t3_algorithm_bundle_20260825/envx_runtime')))
-    for path in [runtime/'install/setup.bash', *(runtime/s[1] for s in SERVICES.values())]:
+    launchers = {name: (root/'scripts' if name == 'sensor_capture_node' else runtime)/spec[1]
+                 for name, spec in SERVICES.items()}
+    for path in [runtime/'install/setup.bash', *launchers.values()]:
         if not path.is_file():
             raise RuntimeError(f'缺少现有 P3 启动文件：{path}')
     env = dict(os.environ, ROS_DOMAIN_ID=DOMAIN, ROS_LOCALHOST_ONLY='0', RMW_IMPLEMENTATION='rmw_cyclonedds_cpp')
@@ -118,7 +124,7 @@ def main(root, check_only=False):
             if found[name]:
                 continue
             with (logs/(name+'.log')).open('w') as log:
-                process = subprocess.Popen(['bash', str(runtime/script), *arguments], cwd=runtime,
+                process = subprocess.Popen(['bash', str(launchers[name]), *arguments], cwd=runtime,
                     env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             children.append((label, process))
             print(f'[启动] {label}，日志：{logs/(name+".log")}', flush=True)

@@ -25,7 +25,7 @@ from .bounded_cloud import BoundedCloudStore
 from .overview import Overview
 from .resources import memory_sample
 from .compact_delivery import CompactDelivery
-from .legacy.dense_grid_store import save_dense_global_grid_map
+from .legacy.dense_grid_store import LiveDenseGlobalMapWriter
 from .legacy.grid_map_message import make_grid_map_message
 from .legacy.voxel_cloud_store import VoxelCloudStore
 
@@ -46,6 +46,9 @@ class TerrainMapper(Node):
             self.cfg["cloud_preview_points"],self.cfg.get("preview_voxel_size",.3))
         self.delivery=CompactDelivery(self.output/"global_grid_map.sqlite3")
         self.overview=Overview(self.cfg.get("overview_side_cells",256),self.cfg.get("overview_resolution",1.))
+        self.dense_writer=LiveDenseGlobalMapWriter(self.output/"global_grid_map.npz",frame_id="map")
+        self.last_dense_revision=-1
+        self.cached_global=None;self.last_global_revision=-1
         self.pressure=False;self.storage_paused=False;self.last_global_wall=0.
         self.last_checkpoint_wall=time.monotonic();self.global_available=False;self.latest_window=None
         self.last_pose=None;self.last_header=None;self.last_stamps={};self.dirty=False
@@ -77,6 +80,7 @@ class TerrainMapper(Node):
         self.status_pub=self.create_publisher(String,"/fusion/map_status",10)
         self.create_timer(.1,self.process)
         self.create_timer(self.cfg["map_publish_period"],self.publish)
+        self.create_timer(self.cfg.get("global_publish_period",20.),self.publish_global)
         self.create_timer(2.,self.health)
         for topic in ["/T3/mapping/get_grid_map","/Car/T3/mapping/get_grid_map"]:
             self.create_service(GetGridMap,topic,self.query)
@@ -169,6 +173,7 @@ class TerrainMapper(Node):
                 self.pending.popleft();self.stats["dropped_scans"]+=1
             return
         self.pending.popleft()
+        process_started=time.monotonic()
         try:
             xyz=cloud_arrays(msg)
             good=np.isfinite(xyz).all(axis=1)
@@ -208,6 +213,7 @@ class TerrainMapper(Node):
             self.overview.update(points)
             self.last_header=copy.deepcopy(msg.header);self.last_header.frame_id="map"
             self.dirty=True;self.stats["mapped_scans"]+=1;self.stats["map_points"]=self.cloud.count
+            self.stats["last_map_update_sec"]=time.monotonic()-process_started
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
             self.stats["dropped_scans"]+=1
             if isinstance(e,(OSError,sqlite3.Error)):self.storage_paused=True
@@ -248,6 +254,7 @@ class TerrainMapper(Node):
         if not self.dirty or self.last_header is None or self.last_pose is None:return
         if self.pressure and time.monotonic()-getattr(self,"last_publish_wall",0)<2*self.cfg["map_publish_period"]:return
         try:
+            publication_started=time.monotonic()
             m=self.grid.extract_window(center_x=float(self.last_pose[0,3]),center_y=float(self.last_pose[1,3]),
                  length_x=self.cfg["map_window"],length_y=self.cfg["map_window"])
             layers,occupancy=self.terrain_layers(m)
@@ -275,17 +282,22 @@ class TerrainMapper(Node):
             self.latest_window=(m,layers)
             self.dirty=False;self.last_publish_wall=time.monotonic()
             self.tum.flush()
-            if time.monotonic()-self.last_global_wall>=self.cfg.get("global_publish_period",20.):
-                self.publish_global()
+            self.stats["last_local_publish_sec"]=time.monotonic()-publication_started
         except (ValueError,RuntimeError,OSError,sqlite3.Error) as e:
             self.get_logger().error("Map publication failed: "+str(e),throttle_duration_sec=5)
 
     def publish_global(self):
+        if self.last_header is None:return
+        publication_started=time.monotonic()
         self.last_global_wall=time.monotonic()
         height,spread,occupancy=self.overview.layers()
         for pub in self.overview_pubs:pub.publish(self.occupancy_message(self.overview.geometry,occupancy))
         try:
             if self.pressure:raise ValueError("Memory pressure: full global message suspended")
+            if self.cached_global is not None and self.last_global_revision==self.grid.update_id:
+                for pub in self.global_pubs:pub.publish(self.cached_global)
+                self.stats["last_global_publish_sec"]=time.monotonic()-publication_started
+                return
             m=self.grid.extract_global(self.cfg.get("global_max_cells",1000000))
             if m is None:return
             # Keep the original full-extent, original-resolution global contract.
@@ -293,16 +305,24 @@ class TerrainMapper(Node):
             layers=m.layers(["elevation"])
             grid_msg=make_grid_map_message(header=self.last_header,geometry=m.geometry,layers=layers)
             for pub in self.global_pubs:pub.publish(grid_msg)
+            self.cached_global=grid_msg;self.last_global_revision=self.grid.update_id
             self.global_available=True
-            save_dense_global_grid_map(self.output/"global_grid_map.npz",m,frame_id="map",
-                map_revision=self.grid.update_id,timestamp_text=time.strftime("%Y%m%d_%H%M%S"))
+            # This detached window is owned by a bounded coalescing worker.
+            # Compression and fsync must not block sensor or publication timers.
+            self.dense_writer.enqueue(m,map_revision=self.grid.update_id,
+                timestamp_text=time.strftime("%Y%m%d_%H%M%S"))
+            self.last_dense_revision=self.grid.update_id
+            self.stats["last_global_publish_sec"]=time.monotonic()-publication_started
         except ValueError as e:
             # Explicitly invalidate the latched global payload rather than leave a
             # stale/cropped map pretending to cover the latest revision.
             empty=GridMap();empty.header=copy.deepcopy(self.last_header)
             for pub in self.global_pubs:pub.publish(empty)
             self.global_available=False
+            self.cached_global=None;self.last_global_revision=-1
             self.get_logger().warn(str(e)+"; use local map/query and global_overview",throttle_duration_sec=20)
+        except (RuntimeError,OSError,sqlite3.Error) as e:
+            self.get_logger().error("Global map publication failed: "+str(e),throttle_duration_sec=5)
 
     def query(self,request,response):
         try:
@@ -346,6 +366,9 @@ class TerrainMapper(Node):
         data=dict(self.stats,**self.grid.memory_stats(),**self.cloud.memory_stats(),**sample,
             pending=len(self.pending),memory_pressure=self.pressure,map_writable=not self.storage_paused,
             global_grid_available=self.global_available,overview_resolution=self.overview.resolution,
+            global_published_revision=self.last_global_revision,
+            dense_persisted_revision=self.dense_writer.persisted_revision,
+            dense_export_error=str(self.dense_writer.last_error) if self.dense_writer.last_error else None,
             revision=self.grid.update_id,last_map_stamp=stamp_sec(self.last_header) if self.last_header else None)
         if rclpy.ok():self.status_pub.publish(String(data=json.dumps(data)))
         try:
@@ -358,6 +381,7 @@ class TerrainMapper(Node):
     def save(self):
         # Checkpoint only: full exports run after the mapper stops. This avoids
         # map copies and long-running SQLite read snapshots during a demo.
+        checkpoint_started=time.monotonic()
         self.tum.flush()
         self.delivery.checkpoint(self.grid);self.cloud.checkpoint()
         if rclpy.ok():
@@ -379,6 +403,7 @@ class TerrainMapper(Node):
                     origin=np.array([m.geometry.origin_x,m.geometry.origin_y]),resolution=m.geometry.resolution,
                     slope=layers["slope"],step=layers["step"],traversability=layers["traversability"])
             tmp.replace(self.output/"local_elevation_latest.npz")
+        self.stats["last_checkpoint_sec"]=time.monotonic()-checkpoint_started
         return self.cloud.count
 
     def save_service(self,request,response):
@@ -392,7 +417,9 @@ class TerrainMapper(Node):
             # A live checkpoint may still have inputs awaiting poses. The
             # benchmark retries until pending=0 and checks scan accounting.
             self.publish()
+            self.publish_global()
             response.message=f"Checkpointed {self.save()} voxels and elevation tiles to {self.output}; export_map.sh after stop"
+            if self.last_dense_revision>=0:self.dense_writer.flush(self.last_dense_revision)
             self.report_status()
             response.success=True
         except Exception as e:response.success=False;response.message=str(e)
@@ -406,6 +433,8 @@ def main():
     finally:
         try:node.save();node.report_status()
         except Exception as e:print("Final checkpoint failed:",e,flush=True)
+        try:node.dense_writer.close(flush_revision=node.last_dense_revision if node.last_dense_revision>=0 else None)
+        except Exception as e:print("Dense map checkpoint failed:",e,flush=True)
         try:node.grid.close()
         except Exception as e:print("Tile checkpoint failed:",e,flush=True)
         node.delivery.close();node.cloud.close();node.tum.close();node.destroy_node()

@@ -151,7 +151,7 @@ tile_cache_mib: 128
 max_query_cells: 250000
 pressure_query_cells: 160000
 global_max_cells: 1000000
-global_publish_period: 20.0
+global_publish_period: 2.0
 overview_side_cells: 256
 overview_resolution: 1.0
 preview_voxel_size: 0.3
@@ -253,3 +253,8 @@ visual_constraint_mode: body_twist
 mapping_pose_settle_sec: 1.6
 normalized_camera_input: true
 ekf_sensor_timeout: 10.0
+
+stationary:
+  enabled: true
+  confirm_frames: 3
+  max_gap: 3.0

@@ -54,6 +54,8 @@ cd /home/yanfa/P3/lidar_visual_fusion
 - 新启动了节点时，保持终端 A 打开。日志路径会在终端打印。
 - 若提示旧节点处于**域 0**等配置冲突，请在原启动终端按 **Ctrl+C** 结束提示的旧节点，再运行本脚本；脚本不会擅自停止旧进程。
 - 仅检查节点是否已启动、配置是否一致：`./start_simulation_sources.sh --check`。
+- 新启动 capture 时默认请求上限 2 Hz、额外等待 0 秒；这不保证 UE 能以 2 Hz 完成传输。已有 capture 会被复用，其参数不会被偷偷改写。
+- 已构建的接收端优化版会自动使用，日常命令不变；新机器的构建方法见 [环境说明](SETUP_CN.md)。
 
 ### 终端 B：启动自己的建图和 RViz
 
@@ -115,6 +117,8 @@ bag 回放运行期间：
 | `/T3/semantic/incremental_map` | 增量地图，`t3_interfaces/msg/IncrementalSemanticMap` |
 | `/T3/mapping/elevation_map` | 高程图，`grid_map_msgs/msg/GridMap` |
 | `/T3/mapping/lidar_map` | 点云图，`sensor_msgs/msg/PointCloud2` |
+| `/Car/T3/mapping/grid_map` | 跟随车辆的局部栅格，`grid_map_msgs/msg/GridMap`，`odom` 坐标系 |
+| `/Car/T3/mapping/global_grid_map` | RViz 使用的累计全局高程栅格，`grid_map_msgs/msg/GridMap`，`map` 坐标系 |
 
 跨机器联调时，bag 启动命令末尾加 `--network`；规划端设置 `ROS_DOMAIN_ID=57`、`ROS_LOCALHOST_ONLY=0`。两端需能互通，并安装对应消息包。实时建图已启用网络发现。
 
@@ -125,6 +129,7 @@ bag 回放运行期间：
 | `/Car/T5/Cam_Left/image_raw/color` | 左图，`sensor_msgs/msg/Image` |
 | `/Car/T5/Cam_Right/image_raw/color` | 右图，`sensor_msgs/msg/Image` |
 | `/Car/T5/OS1/points` | 原始点云，`sensor_msgs/msg/PointCloud2` |
+| `/Car/T5/TOF_Left/image_raw/depth`、`/Car/T5/TOF_Right/image_raw/depth` | 原始 ToF 深度，`sensor_msgs/msg/Image`；深度单位尚未确认，暂不入图 |
 | `/car/odom` | 仿真车辆遥测位姿，`nav_msgs/msg/Odometry`；不是本算法估计结果 |
 | `/car/cmd_vel` | 人工／外部控制程序的速度指令入口，`geometry_msgs/msg/Twist` |
 
@@ -159,9 +164,19 @@ ros2 node list
 
 - 入图跟随有效 LiDAR 帧，使用相同时间戳的融合位姿；图像用于改善位姿。当前入图前等待 1.6 秒，让视觉修正进入融合。
 - 高程、点云和增量地图每 2 秒检查发布，有新内容才发送，最高约 0.5 Hz。
-- 全局地图是沿途累计的整幅地图，有更新时整图发布间隔至少 20 秒；车附近的局部栅格窗口为 64×64 米。
-- 当前 UE 采集约 4 秒一帧，因此新增地图通常也约 4 秒一次。单纯缩短发布周期不能增加传感器提供的信息。
+- RViz 使用沿途累计的全局地图，独立定时器每 2 秒触发发布；压缩落盘异步执行。定时器可能因同进程建图耗时发生抖动，不承诺硬实时。
+- 规划端仍使用跟随车辆的局部 64×64 米栅格。未观测区域保持未知。
+- 当前 capture 请求上限为 2 Hz；2026-09-16 驻车场景实测，接收端优化后由平均 1.83 秒降到 1.36 秒一批（约 0.74 Hz），仍未达到 2 Hz。缩短地图发布周期不能补出尚未采到的观测。
 - LiDAR 定位退化、点云仍有效时，可由合格视觉接续定位；点云完全断流时暂停几何地图新增，目前没有纯双目深度后备建图。
+
+## 7. ToF 与 IMU 当前状态
+
+- ToF 外参在原 P3 的 `workspace/src/t3_semantic_mapping/config/pointcloud_extrinsic.yaml`：`tof_left` 对应 TOF5，`tof_right` 对应 TOF4。它们来自 `config/车体前右下-标定数据20260817(1).xlsx`，已转换为米和 ROS 车体系。
+- 两路深度已收到，但按现有 capture 的 `0.01 米/单位` 转换后，地面比 LiDAR 低约 2.5 米。仿真深度编码尚未确认，因此暂未启用 ToF 补图。
+- UE 的 `meta.json` 有姿态、速度和角速度字段；当前捕获的文件没有加速度字段。检查时 `/imu/data` 没有发布者。附近端口未找到新服务不代表仿真一定没有 IMU。
+- 实时配置已增加图像辅助静止检测：两路图像特征位移、可靠视觉运动和点云变化连续 3 帧一致，才把该帧视觉运动约束替换为零速度。证据异常、变化或过期立即解除；可在 `/fusion/status` 的 `stationary` 字段查看。它不是任意场景下绝对可靠的停车判定。
+
+细节见 [在线漂移与传输核查](live_drift_and_transport.md)。
 
 ## 常见情况
 

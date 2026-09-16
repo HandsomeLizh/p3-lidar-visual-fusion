@@ -12,7 +12,6 @@ mode="$1"
 shift
 if [[ "$mode" == "monitor" ]]; then
   exec /usr/bin/python3 "$ROOT/scripts/p3_visual_monitor.py" --ros-args \
-    -r /T3/mapping/global_grid_map:=/T3/mapping/elevation_map \
     -r /T3/mapping/lidar_status:=/fusion/map_status \
     -r /Car/T5/Cam_Left/image_raw/color:=/fusion/left \
     -r /Car/T5/Cam_Right/image_raw/color:=/fusion/right \

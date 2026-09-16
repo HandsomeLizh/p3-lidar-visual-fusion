@@ -85,6 +85,7 @@ def main():
             (result_dir/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)
         finally:
             executor.remove_node(mapper);executor.remove_node(driver)
+            mapper.dense_writer.close(flush_revision=mapper.last_dense_revision if mapper.last_dense_revision>=0 else None)
             mapper.grid.close();mapper.delivery.close();mapper.cloud.close();mapper.tum.close()
             mapper.destroy_node();driver.destroy_node();rclpy.shutdown()
 

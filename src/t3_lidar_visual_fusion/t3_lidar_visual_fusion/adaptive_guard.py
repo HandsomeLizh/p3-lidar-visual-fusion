@@ -15,13 +15,17 @@ from std_msgs.msg import String
 from .core import PoseBuffer, motion
 from .continuous_frame import ContinuousFrame, pose_covariance, rotate_covariance
 from .body_motion import BodyMotion
+from .stationary import StationaryDetector
 from .odometry_guard import OdometryGuard
-from .ros_utils import stamp_sec, transform_from_pose, set_pose
+from .ros_utils import stamp_sec, transform_from_pose, set_pose, cloud_arrays
+from sensor_msgs.msg import PointCloud2
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 
 class AdaptiveGuard(OdometryGuard):
     def __init__(self):
         self.visual_usable = False; self.lidar_usable = False; self.conflict = False
+        self.stationary = None
         super().__init__()
         if self.visual_source not in ("learned", "none"):
             raise ValueError("Adaptive mode requires the independently checked learned frontend")
@@ -54,7 +58,28 @@ class AdaptiveGuard(OdometryGuard):
         self.lidar_floor = np.asarray(self.cfg.get("lidar_covariance_floor",
                                                     [.0025]*3 + [.0004]*3))
         self.create_subscription(String, "/fusion/lidar_quality", self.registration_quality, 30)
+        stationary_cfg=dict(self.cfg.get("stationary",{}))
+        if stationary_cfg.pop("enabled",False):
+            if not self.use_body_motion:raise ValueError("Stationarity requires visual body-motion observations")
+            self.stationary=StationaryDetector(**stationary_cfg)
+            self.create_subscription(PointCloud2,"/fusion/lidar",self.stationary_cloud,
+                QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
         self.get_logger().info("Adaptive repair: persistent epoch transforms and full directional covariance")
+
+    def image(self,msg,side):
+        super().image(msg,side)
+        if self.stationary is None:return
+        try:
+            healthy=bool(self.quality[side] and self.quality[side][-1][1].valid
+                         and stamp_sec(msg)>self.visual_blocked_through)
+            self.stationary.image(stamp_sec(msg),self.bridge.imgmsg_to_cv2(msg,desired_encoding="mono8"),side,healthy)
+        except Exception:self.stationary.invalidate("invalid_stationarity_image")
+
+    def stationary_cloud(self,msg):
+        try:
+            if len(msg.data)>self.cfg.get("max_cloud_bytes",16000000):raise ValueError("Cloud too large")
+            self.stationary.cloud(stamp_sec(msg),cloud_arrays(msg))
+        except (ValueError,RuntimeError):self.stationary.invalidate("invalid_stationarity_cloud")
 
     def registration_quality(self, msg):
         try:
@@ -78,12 +103,13 @@ class AdaptiveGuard(OdometryGuard):
             self.visual_arrivals.append(self.last_vins_input_wall)
 
     def close_vision(self, reason):
+        if self.stationary is not None:self.stationary.invalidate(reason)
         self.visual_usable = False
         if hasattr(self, "visual_motion"):
             self.visual_motion.reset()
         return super().close_vision(reason)
 
-    def lidar_reference_at(self, stamp):
+    def lidar_reference_covariance_at(self, stamp):
         if not self.lidar_covariances:
             return None
         t, cov = min(self.lidar_covariances, key=lambda sample: abs(sample[0]-stamp))
@@ -92,6 +118,11 @@ class AdaptiveGuard(OdometryGuard):
         if np.linalg.eigvalsh(cov[:3, :3])[-1] > self.cfg.get("lidar_reference_position_variance", 1.):
             return None
         if np.linalg.eigvalsh(cov[3:, 3:])[-1] > self.cfg.get("lidar_reference_rotation_variance", .25):
+            return None
+        return cov
+
+    def lidar_reference_at(self, stamp):
+        if self.lidar_reference_covariance_at(stamp) is None:
             return None
         return self.lio_poses.at(stamp, tolerance=self.cfg.get("agreement_stamp_tolerance", .05),
                                  max_gap=self.cfg.get("agreement_pose_max_gap", .35))
@@ -203,8 +234,10 @@ class AdaptiveGuard(OdometryGuard):
                 self.adaptive_rejections["visual_geometry"] += 1
                 self.counters["vins_rejected"] += 1; return
             if reference is not None:
-                decision = self.consistency.check(stamp, transform, reference)
+                reference_covariance = self.lidar_reference_covariance_at(stamp)
+                decision = self.consistency.check(stamp, transform, reference, reference_covariance)
                 self.motion_status = dict(reason=decision.reason, reference_available=True,
+                    reference_uncertainty_considered=reference_covariance is not None,
                     translation_error_m=decision.translation_error, rotation_error_rad=decision.rotation_error,
                     interval_sec=decision.interval, score=decision.score)
                 if decision.reason == "visual_lidar_disagreement":
@@ -232,6 +265,12 @@ class AdaptiveGuard(OdometryGuard):
                 if body_motion is None:
                     self.visual_usable = False; self.counters["vins_rejected"] += 1; return
                 velocity, velocity_covariance, interval = body_motion
+                if self.stationary is not None and self.stationary.check(stamp,velocity):
+                    # Replace the same visual motion observation; do not add a
+                    # second correlated measurement or overwrite the output pose.
+                    velocity=np.zeros(6)
+                    velocity_covariance=np.diag([.005**2]*3+[.003**2]*3)
+                    self.stationary.zero_updates+=1
                 self.last_visual_motion_interval = interval
                 # Preserve the honest source epoch on the inactive pose. Twist
                 # is expressed in child_frame_id=base_link, per nav_msgs/Odometry.
@@ -334,6 +373,7 @@ class AdaptiveGuard(OdometryGuard):
             lidar_pose_constraints=self.lidar_constraints,
             visual_anchors=self.visual_anchors, lidar_anchors=self.lidar_anchors,
             quality_basis="overlap_residual_and_directional_covariance",
+            stationary=self.stationary.status() if self.stationary is not None else {"state":"disabled"},
             lidar_quality=self.lidar_quality, motion_consistency=self.motion_status,
             adaptive_rejections=self.adaptive_rejections, visual_timing=self.timing_status,
             visual_timing_rejected=self.visual_timing_rejected,
