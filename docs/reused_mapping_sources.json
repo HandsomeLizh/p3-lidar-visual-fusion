@@ -1,0 +1,38 @@
+{
+  "semantic_grid.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/semantic_grid.py",
+    "sha256": "833db6e8f611aba7addc0d5a52b6a8c125b7e917b36146426a3dc87fe482889f"
+  },
+  "lidar_occupancy.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/lidar_occupancy.py",
+    "sha256": "43a33ba653694f66b03b6f0035d99ec82da8d40d1cc9970499d0da5972c0e23c"
+  },
+  "coordinate_utils.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/coordinate_utils.py",
+    "sha256": "ea035d6b0d45e7356c06c0f9a3820f3a385bb0b70d25fd5f7f3acf7d52991f23"
+  },
+  "grid_map_message.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/grid_map_message.py",
+    "sha256": "9ae7a0c262820a1476e42472e078cdc6cf3db0a6720bc6fa341c9e8be231de4f"
+  },
+  "voxel_cloud_store.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/voxel_cloud_store.py",
+    "sha256": "58890c398a437e01d5c6c339ada499ec1e77337d649cc01ad9db1d386b00afbc"
+  },
+  "tiled_semantic_map.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/tiled_semantic_map.py",
+    "sha256": "b241be02c9536c47c025e493405294670dbc303e38e281b937447121dadbaec4"
+  },
+  "snapshot_store.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/snapshot_store.py",
+    "sha256": "27690a3e8fa2f4df83caa222550e7cfbd79522d1a5a5fbb454c063540ccf91b2"
+  },
+  "compact_grid_store.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/compact_grid_store.py",
+    "sha256": "376d6ad5797b6a911b3d1009c3b7435524195c272695b6a8a00aace206a0bcfa"
+  },
+  "dense_grid_store.py": {
+    "source": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/dense_grid_store.py",
+    "sha256": "551c9f4656c00b38a087a210131934e18ed7ebb6001330b15e3c3f211ba7dbb7"
+  }
+}

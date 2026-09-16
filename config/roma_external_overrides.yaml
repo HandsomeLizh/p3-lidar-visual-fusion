@@ -1,0 +1,32 @@
+/**:
+  ros__parameters:
+    odometry_topic: /fusion/roma_raw
+    publish_odometry_compat: false
+    publish_tf: false
+    trajectory_topic: /fusion/roma_internal/trajectory
+    feature_matches_topic: /fusion/roma_internal/feature_matches
+    pointcloud_topic: /fusion/roma_internal/map_points
+    occupancy_topic: /fusion/roma_internal/occupancy_grid
+    semantic_grid_topic: /fusion/roma_internal/semantic_grid
+    semantic_color_topic: /fusion/roma_internal/semantic_grid_color
+    elevation_topic: /fusion/roma_internal/elevation_grid
+    elevation_variance_topic: /fusion/roma_internal/elevation_variance_grid
+    elevation_color_topic: /fusion/roma_internal/elevation_grid_color
+    grid_map_topic: /fusion/roma_internal/grid_map
+    grid_map_odom_topic: /fusion/roma_internal/grid_map_odom
+    global_grid_map_topic: /fusion/roma_internal/global_grid_map
+    global_overview_topic: /fusion/roma_internal/global_overview
+    global_map_revision_topic: /fusion/roma_internal/global_map_revision
+    grid_map_query_service: /fusion/roma_internal/get_grid_map
+    incremental_map_topic: /fusion/roma_internal/incremental_map
+    incremental_map_batch_topic: /fusion/roma_internal/map_batch
+    incremental_map_replay_service: /fusion/roma_internal/replay_full_map
+    registered_lidar_topic: /fusion/roma_internal/lidar_keyframe
+    publish_map_pointcloud: false
+    publish_registered_lidar: false
+    publish_layer_images: false
+    publish_incremental_map: false
+    publish_local_occupancy_grid: false
+    publish_global_overview: false
+    publish_global_grid_map: false
+    save_dense_global_grid_map: false

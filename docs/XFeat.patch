@@ -1,0 +1,36 @@
+diff --git a/modules/xfeat.py b/modules/xfeat.py
+index ce6c512..f0bb5a1 100644
+--- a/modules/xfeat.py
++++ b/modules/xfeat.py
+@@ -20,9 +20,9 @@ class XFeat(nn.Module):
+ 		It supports inference for both sparse and semi-dense feature extraction & matching.
+ 	"""
+ 
+-	def __init__(self, weights = os.path.abspath(os.path.dirname(__file__)) + '/../weights/xfeat.pt', top_k = 4096, detection_threshold=0.05):
++	def __init__(self, weights = os.path.abspath(os.path.dirname(__file__)) + '/../weights/xfeat.pt', top_k = 4096, detection_threshold=0.05, device=None):
+ 		super().__init__()
+-		self.dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
++		self.dev = torch.device(device if device is not None else ('cuda' if torch.cuda.is_available() else 'cpu'))
+ 		self.net = XFeatModel().to(self.dev).eval()
+ 		self.top_k = top_k
+ 		self.detection_threshold = detection_threshold
+@@ -30,7 +30,7 @@ class XFeat(nn.Module):
+ 		if weights is not None:
+ 			if isinstance(weights, str):
+ 				print('loading weights from: ' + weights)
+-				self.net.load_state_dict(torch.load(weights, map_location=self.dev))
++				self.net.load_state_dict(torch.load(weights, map_location=self.dev, weights_only=True))
+ 			else:
+ 				self.net.load_state_dict(weights)
+ 
+@@ -72,6 +72,10 @@ class XFeat(nn.Module):
+ 		#Convert logits to heatmap and extract kpts
+ 		K1h = self.get_kpts_heatmap(K1)
+ 		mkpts = self.NMS(K1h, threshold=detection_threshold, kernel_size=5)
++		if mkpts.shape[1] == 0:
++			return [{'keypoints': M1.new_empty((0, 2)),
++					 'descriptors': M1.new_empty((0, 64)),
++					 'scores': M1.new_empty((0,))} for _ in range(B)]
+ 
+ 		#Compute reliability scores
+ 		_nearest = InterpolateSparse2d('nearest')

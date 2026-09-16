@@ -1,0 +1,8 @@
+{
+  "checked_at_utc": "2026-09-15T11:22:18.256110+00:00",
+  "mode": "static syntax only; no imports of new application modules, build, ROS or tests",
+  "python_files": 37,
+  "shell_files": 14,
+  "errors": [],
+  "runtime_tests": "deferred at user request"
+}

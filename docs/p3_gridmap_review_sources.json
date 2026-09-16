@@ -1,0 +1,21 @@
+{
+  "observed_at_utc": "2026-09-15T14:11:15.299306+00:00",
+  "sources": {
+    "elevation_fusion.py": {
+      "path": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/elevation_fusion.py",
+      "sha256": "3e657bcd531c04a40dee676373aff4a5ed9a40994425e86e8b56b67f60207117"
+    },
+    "semantic_grid.py": {
+      "path": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/semantic_grid.py",
+      "sha256": "8da706f105550b082847642db1b6156fc1b2eb15f7aefd088c029b538aff75ce"
+    },
+    "tiled_semantic_map.py": {
+      "path": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/tiled_semantic_map.py",
+      "sha256": "d9825ebd5ae2f75c3b1ee8eec0f1ff6cab427ba38b3ca22352296d15db5189ea"
+    },
+    "grid_map_message.py": {
+      "path": "/home/yanfa/P3/roma_t3_algorithm_bundle_20260825/workspace/src/t3_semantic_mapping/t3_semantic_mapping/grid_map_message.py",
+      "sha256": "9ae7a0c262820a1476e42472e078cdc6cf3db0a6720bc6fa341c9e8be231de4f"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+[
+  {"start": 25, "end": 40, "kind": "blackout"},
+  {"start": 60, "end": 75, "kind": "overexposure"},
+  {"start": 95, "end": 110, "kind": "diagonal_glare"},
+  {"start": 125, "end": 140, "kind": "low_light"},
+  {"start": 140, "end": 156, "kind": "grayscale_control"}
+]

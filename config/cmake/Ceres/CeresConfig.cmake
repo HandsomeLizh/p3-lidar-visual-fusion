@@ -1,0 +1,12 @@
+# Prefer this workspace's extracted dependencies, then the system installation.
+get_filename_component(T3_CERES_WORKSPACE "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+set(T3_CERES_PREFIX "${T3_CERES_WORKSPACE}/deps/root/usr")
+find_path(CERES_INCLUDE_DIR NAMES ceres/ceres.h HINTS "${T3_CERES_PREFIX}/include")
+find_library(T3_CERES_LIBRARY NAMES ceres HINTS "${T3_CERES_PREFIX}/lib" "${T3_CERES_PREFIX}/lib/${CMAKE_LIBRARY_ARCHITECTURE}")
+find_library(T3_GLOG_LIBRARY NAMES glog HINTS "${T3_CERES_PREFIX}/lib/${CMAKE_LIBRARY_ARCHITECTURE}" "${T3_CERES_PREFIX}/lib")
+find_library(T3_GFLAGS_LIBRARY NAMES gflags HINTS "${T3_CERES_PREFIX}/lib/${CMAKE_LIBRARY_ARCHITECTURE}" "${T3_CERES_PREFIX}/lib")
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(Ceres REQUIRED_VARS CERES_INCLUDE_DIR T3_CERES_LIBRARY T3_GLOG_LIBRARY T3_GFLAGS_LIBRARY)
+set(CERES_FOUND "${Ceres_FOUND}")
+set(CERES_INCLUDE_DIRS "${CERES_INCLUDE_DIR};/usr/include/eigen3")
+set(CERES_LIBRARIES "${T3_CERES_LIBRARY};${T3_GLOG_LIBRARY};${T3_GFLAGS_LIBRARY}")

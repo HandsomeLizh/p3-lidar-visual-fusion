@@ -1,0 +1,223 @@
+diff --git a/vins/CMakeLists.txt b/vins/CMakeLists.txt
+index c58ff9b..b8eefcc 100755
+--- a/vins/CMakeLists.txt
++++ b/vins/CMakeLists.txt
+@@ -61,14 +61,6 @@ add_executable(vins_node src/rosNodeTest.cpp)
+ ament_target_dependencies(vins_node rclcpp rcpputils std_msgs visualization_msgs geometry_msgs nav_msgs tf2 tf2_ros cv_bridge camera_models image_transport)
+ target_link_libraries(vins_node vins_lib) 
+ 
+-add_executable(kitti_odom_test src/KITTIOdomTest.cpp)
+-ament_target_dependencies(kitti_odom_test rclcpp rcpputils std_msgs visualization_msgs geometry_msgs nav_msgs tf2 tf2_ros cv_bridge camera_models image_transport)
+-target_link_libraries(kitti_odom_test vins_lib) 
+-
+-add_executable(kitti_gps_test src/KITTIGPSTest.cpp)
+-ament_target_dependencies(kitti_gps_test rclcpp rcpputils std_msgs visualization_msgs geometry_msgs nav_msgs tf2 tf2_ros cv_bridge camera_models image_transport)
+-target_link_libraries(kitti_gps_test vins_lib) 
+-
+ # added from DEBUG
+ 
+ # Install launch files
+diff --git a/vins/src/estimator/estimator.cpp b/vins/src/estimator/estimator.cpp
+index 53ee2b8..3770acb 100755
+--- a/vins/src/estimator/estimator.cpp
++++ b/vins/src/estimator/estimator.cpp
+@@ -19,7 +19,7 @@ Estimator::Estimator(): f_manager{Rs}
+ 
+ Estimator::~Estimator()
+ {
+-    if (MULTIPLE_THREAD)
++    if (processThread.joinable())
+     {
+         processThread.join();
+         printf("join thread \n");
+@@ -187,6 +187,7 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
+         if(inputImageCnt % 2 == 0)
+         {
+             mBuf.lock();
++            while (featureBuf.size() >= 4) featureBuf.pop();
+             featureBuf.push(make_pair(t, featureFrame));
+             mBuf.unlock();
+         }
+@@ -194,6 +195,7 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
+     else
+     {
+         mBuf.lock();
++        while (featureBuf.size() >= 4) featureBuf.pop();
+         featureBuf.push(make_pair(t, featureFrame));
+         mBuf.unlock();
+         TicToc processTime;
+@@ -206,6 +208,9 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
+ void Estimator::inputIMU(double t, const Vector3d &linearAcceleration, const Vector3d &angularVelocity)
+ {
+     mBuf.lock();
++    while (accBuf.size() >= 4000 && !gyrBuf.empty()) {
++        accBuf.pop(); gyrBuf.pop();
++    }
+     accBuf.push(make_pair(t, linearAcceleration));
+     gyrBuf.push(make_pair(t, angularVelocity));
+     //printf("input imu with time %f \n", t);
+@@ -283,7 +288,7 @@ bool Estimator::IMUAvailable(double t)
+ 
+ void Estimator::processMeasurements()
+ {
+-    while (1)
++    while (rclcpp::ok())
+     {
+         // cout << "[processMeasurements]  loop - start" << endl;
+ 
+@@ -295,7 +300,7 @@ void Estimator::processMeasurements()
+             feature = featureBuf.front();
+             curTime = feature.first + td;
+             // std::cout << "t0: " << std::fixed << curTime << std::endl;
+-            while(1)
++            while(rclcpp::ok())
+             {
+                 if ((!USE_IMU  || IMUAvailable(feature.first + td)))
+                     break;
+@@ -309,6 +314,7 @@ void Estimator::processMeasurements()
+                 }
+             }
+             // cout << "2" << endl;
++            if (!rclcpp::ok()) return;
+             mBuf.lock();
+             if(USE_IMU)
+             {
+@@ -1168,7 +1174,7 @@ void Estimator::optimization()
+ 
+     if (USE_GPU_CERES)
+         // std::cout << "1" << endl;
+-        options.dense_linear_algebra_library_type = ceres::CUDA;
++        options.dense_linear_algebra_library_type = ceres::EIGEN;  // packaged Ceres 2.0 CPU backend
+     else
+         // std::cout << "2" << endl;
+         options.linear_solver_type = ceres::DENSE_SCHUR;
+diff --git a/vins/src/rosNodeTest.cpp b/vins/src/rosNodeTest.cpp
+index 813da9e..6db8f10 100755
+--- a/vins/src/rosNodeTest.cpp
++++ b/vins/src/rosNodeTest.cpp
+@@ -34,6 +34,7 @@ void img0_callback(const sensor_msgs::msg::Image::SharedPtr img_msg)
+ {
+     m_buf.lock();
+     // std::cout << "Left : " << img_msg->header.stamp.sec << "." << img_msg->header.stamp.nanosec << endl;
++    if (img0_buf.size() >= 2) img0_buf.pop();
+     img0_buf.push(img_msg);
+     m_buf.unlock();
+ }
+@@ -42,6 +43,7 @@ void img1_callback(const sensor_msgs::msg::Image::SharedPtr img_msg)
+ {
+     m_buf.lock();
+     // std::cout << "Right: " << img_msg->header.stamp.sec << "." << img_msg->header.stamp.nanosec << endl;
++    if (img1_buf.size() >= 2) img1_buf.pop();
+     img1_buf.push(img_msg);
+     m_buf.unlock();
+ }
+@@ -73,7 +75,7 @@ cv::Mat getImageFromMsg(const sensor_msgs::msg::Image::ConstPtr &img_msg)
+ // extract images with same timestamp from two topics
+ void sync_process()
+ {
+-    while(1)
++    while(rclcpp::ok())
+     {
+         if(STEREO)
+         {
+@@ -243,7 +245,8 @@ int main(int argc, char **argv)
+ 	auto n = rclcpp::Node::make_shared("vins_estimator");
+     // ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+ 
+-    if(argc != 2)
++    const auto arguments = rclcpp::remove_ros_arguments(argc, argv);
++    if(arguments.size() != 2)
+     {
+         printf("please intput: rosrun vins vins_node [config file] \n"
+                "for example: rosrun vins vins_node "
+@@ -251,8 +254,8 @@ int main(int argc, char **argv)
+         return 1;
+     }
+ 
+-    string config_file = argv[1];
+-    printf("config_file: %s\n", argv[1]);
++    string config_file = arguments[1];
++    printf("config_file: %s\n", config_file.c_str());
+ 
+     readParameters(config_file);
+     estimator.setParameter();
+@@ -269,15 +272,15 @@ int main(int argc, char **argv)
+     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu = NULL;
+     if(USE_IMU)
+     {
+-        sub_imu = n->create_subscription<sensor_msgs::msg::Imu>(IMU_TOPIC, rclcpp::QoS(rclcpp::KeepLast(2000)), imu_callback);
++        sub_imu = n->create_subscription<sensor_msgs::msg::Imu>(IMU_TOPIC, rclcpp::QoS(rclcpp::KeepLast(400)), imu_callback);
+     }
+-    auto sub_feature = n->create_subscription<sensor_msgs::msg::PointCloud>("/feature_tracker/feature", rclcpp::QoS(rclcpp::KeepLast(2000)), feature_callback);
+-    auto sub_img0 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE0_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)), img0_callback);
++    auto sub_feature = n->create_subscription<sensor_msgs::msg::PointCloud>("/feature_tracker/feature", rclcpp::QoS(rclcpp::KeepLast(400)), feature_callback);
++    auto sub_img0 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE0_TOPIC, rclcpp::QoS(rclcpp::KeepLast(2)), img0_callback);
+     
+     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_img1 = NULL;
+     if(STEREO)
+     {
+-        sub_img1 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE1_TOPIC, rclcpp::QoS(rclcpp::KeepLast(100)), img1_callback);
++        sub_img1 = n->create_subscription<sensor_msgs::msg::Image>(IMAGE1_TOPIC, rclcpp::QoS(rclcpp::KeepLast(2)), img1_callback);
+     }
+     
+     auto sub_restart = n->create_subscription<std_msgs::msg::Bool>("/vins_restart", rclcpp::QoS(rclcpp::KeepLast(100)), restart_callback);
+@@ -286,6 +289,7 @@ int main(int argc, char **argv)
+ 
+     std::thread sync_thread{sync_process};
+     rclcpp::spin(n);
++    if (sync_thread.joinable()) sync_thread.join();
+ 
+     return 0;
+ }
+diff --git a/vins/src/utility/visualization.cpp b/vins/src/utility/visualization.cpp
+index 9ddd41f..fc667af 100755
+--- a/vins/src/utility/visualization.cpp
++++ b/vins/src/utility/visualization.cpp
+@@ -33,18 +33,18 @@ size_t pub_counter = 0;
+ 
+ void registerPub(rclcpp::Node::SharedPtr n)
+ {
+-    pub_latest_odometry = n->create_publisher<nav_msgs::msg::Odometry>("imu_propagate", 1000);
+-    pub_path = n->create_publisher<nav_msgs::msg::Path>("path", 1000);
+-    pub_odometry = n->create_publisher<nav_msgs::msg::Odometry>("odometry", 1000);
+-    pub_point_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("point_cloud", 1000);
+-    pub_margin_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("margin_cloud", 1000);
+-    pub_key_poses = n->create_publisher<visualization_msgs::msg::Marker>("key_poses", 1000);
+-    pub_camera_pose = n->create_publisher<nav_msgs::msg::Odometry>("camera_pose", 1000);
+-    pub_camera_pose_visual = n->create_publisher<visualization_msgs::msg::MarkerArray>("camera_pose_visual", 1000);
+-    pub_keyframe_pose = n->create_publisher<nav_msgs::msg::Odometry>("keyframe_pose", 1000);
+-    pub_keyframe_point = n->create_publisher<sensor_msgs::msg::PointCloud>("keyframe_point", 1000);
+-    pub_extrinsic = n->create_publisher<nav_msgs::msg::Odometry>("extrinsic", 1000);
+-    pub_image_track = n->create_publisher<sensor_msgs::msg::Image>("image_track", 1000);
++    pub_latest_odometry = n->create_publisher<nav_msgs::msg::Odometry>("imu_propagate", 10);
++    pub_path = n->create_publisher<nav_msgs::msg::Path>("path", 10);
++    pub_odometry = n->create_publisher<nav_msgs::msg::Odometry>("odometry", 10);
++    pub_point_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("point_cloud", 10);
++    pub_margin_cloud = n->create_publisher<sensor_msgs::msg::PointCloud>("margin_cloud", 10);
++    pub_key_poses = n->create_publisher<visualization_msgs::msg::Marker>("key_poses", 10);
++    pub_camera_pose = n->create_publisher<nav_msgs::msg::Odometry>("camera_pose", 10);
++    pub_camera_pose_visual = n->create_publisher<visualization_msgs::msg::MarkerArray>("camera_pose_visual", 10);
++    pub_keyframe_pose = n->create_publisher<nav_msgs::msg::Odometry>("keyframe_pose", 10);
++    pub_keyframe_point = n->create_publisher<sensor_msgs::msg::PointCloud>("keyframe_point", 10);
++    pub_extrinsic = n->create_publisher<nav_msgs::msg::Odometry>("extrinsic", 10);
++    pub_image_track = n->create_publisher<sensor_msgs::msg::Image>("image_track", 10);
+ 
+     cameraposevisual.setScale(0.1);
+     cameraposevisual.setLineWidth(0.01);
+@@ -160,8 +160,14 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
+         pose_stamped.pose = odometry.pose.pose;
+         path.header = header;
+         path.header.frame_id = "world";
+-        path.poses.push_back(pose_stamped);
+-        pub_path->publish(path);
++        // Raw backend path is debug-only; the T3 path has a separate bound.
++        if (pub_path->get_subscription_count() > 0) {
++            if (path.poses.size() >= 2000) path.poses.erase(path.poses.begin(), path.poses.begin()+1000);
++            path.poses.push_back(pose_stamped);
++            pub_path->publish(path);
++        } else {
++            path.poses.clear();
++        }
+ 
+         // write result to file
+         ofstream foutC(VINS_RESULT_PATH, ios::app);

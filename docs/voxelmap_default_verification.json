@@ -1,0 +1,13 @@
+{
+  "checks": {
+    "voxelmap_started": true,
+    "adaptive_guard_started": true,
+    "learned_started": true,
+    "point_lio_started": false
+  },
+  "build_log": "logs/build_voxelmap_default.log",
+  "active_packages_built": 6,
+  "point_lio_colcon_ignored": true,
+  "source_manifest_matches": true,
+  "runtime": "/home/yanfa/P3/lidar_visual_fusion/results/long_voxelmap_80m_20260915"
+}

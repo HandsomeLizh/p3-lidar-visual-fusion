@@ -1,0 +1,103 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 25; 28; 34
+    Fixed Frame: odom
+    Frame Rate: 20
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Ground grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 80
+      Color: 90; 90; 100
+      Alpha: 0.3
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LiDAR accumulated XYZ map
+      Enabled: true
+      Topic:
+        Value: /T3/mapping/lidar_map
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.06
+      Position Transformer: XYZ
+      Color Transformer: AxisColor
+      Axis: Z
+      Use Fixed Frame: true
+      Autocompute Value Bounds: true
+      Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Elevation grid (height color)
+      Enabled: true
+      Topic:
+        Value: /T3/mapping/elevation_cloud
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Style: Squares
+      Size (m): 0.2
+      Size (Pixels): 3
+      Position Transformer: XYZ
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Autocompute Intensity Bounds: true
+      Use rainbow: true
+      Decay Time: 0
+    - Class: rviz_default_plugins/Path
+      Name: Fused trajectory
+      Enabled: true
+      Topic:
+        Value: /T3/semantic/trajectory
+        Depth: 2
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Color: 255; 240; 0
+      Line Style: Lines
+      Line Width: 0.07
+      Alpha: 1
+    - Class: rviz_default_plugins/Odometry
+      Name: Current body pose
+      Enabled: true
+      Topic:
+        Value: /T3/semantic/current_pose
+        Depth: 10
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Keep: 1
+      Shape: Arrow
+      Color: 255; 80; 80
+      Angle Tolerance: 0.01
+      Position Tolerance: 0.01
+      Covariance:
+        Value: false
+    - Class: rviz_default_plugins/Map
+      Name: Traversability occupancy (optional)
+      Enabled: false
+      Topic:
+        Value: /T3/mapping/traversability
+        Depth: 1
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Alpha: 0.5
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 45
+      Pitch: 0.75
+      Yaw: 3.8
+      Focal Point:
+        X: 6
+        Y: 0
+        Z: 0
+Window Geometry:
+  Width: 1440
+  Height: 900

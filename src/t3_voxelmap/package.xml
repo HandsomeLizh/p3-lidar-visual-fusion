@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<package format="3"><name>t3_voxelmap</name><version>0.1.0</version>
+<description>Isolated ROS2 adapter of the released VoxelMap estimator</description>
+<maintainer email="local@example.invalid">P3 integration</maintainer><license>GPL-2.0</license>
+<buildtool_depend>ament_cmake</buildtool_depend><depend>rclcpp</depend><depend>sensor_msgs</depend>
+<depend>nav_msgs</depend><depend>std_msgs</depend><export><build_type>ament_cmake</build_type></export></package>

@@ -1,0 +1,25 @@
+{
+  "upstream": "https://github.com/hku-mars/VoxelMap",
+  "commit": "d787ee8ccfb0e509a36adb2c52bd5da97b29c39a",
+  "reused": [
+    "OctoTree",
+    "plane covariance",
+    "point measurement covariance",
+    "association",
+    "constant velocity model",
+    "iterated information update"
+  ],
+  "adaptations": [
+    "ROS2 transport",
+    "sensor-to-base pose conversion",
+    "state-sized LDLT solve",
+    "bounded local map eviction",
+    "metrics and observability output"
+  ],
+  "excluded": [
+    "ROS1 visualization",
+    "KITTI-specific vertical angle correction",
+    "IMU path"
+  ],
+  "default_parameters": "Upstream velodyne.yaml, except 2 worker threads and bounded local map"
+}

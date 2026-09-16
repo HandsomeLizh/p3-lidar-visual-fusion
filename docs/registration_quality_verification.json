@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "output": "flat ratios: 0 0\nroom ratios: 1 0.802563\nregistration quality checks passed\n",
+  "thresholds": {
+    "min_matches": 50,
+    "min_match_ratio": 0.15,
+    "max_residual_rms_m": 0.25,
+    "min_translation_eigen_ratio": 0.02,
+    "min_pose_eigen_ratio": 0.003
+  }
+}

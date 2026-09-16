@@ -1,0 +1,53 @@
+{
+  "sources": {
+    "XFeat": {
+      "url": "https://github.com/verlab/accelerated_features.git",
+      "commit": "e92685f57f8318b18725c5c8c0bd28c7fe188d9a"
+    },
+    "LightGlue": {
+      "url": "https://github.com/cvg/LightGlue.git",
+      "commit": "eb42fee2d71449efb0aa5c10549752b5d75384d8"
+    }
+  },
+  "files": {
+    "deps/learned-checkpoints/superpoint_v1.pth": {
+      "sha256": "52b6708629640ca883673b5d5c097c4ddad37d8048b33f09c8ca0d69db12c40e",
+      "bytes": 5206086,
+      "source": "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/superpoint_v1.pth"
+    },
+    "deps/learned-checkpoints/superpoint_lightglue_v0-1_arxiv.pth": {
+      "sha256": "6ff7040d0a497fc6639337946d7538dae07428c18f77a067a0b5a960e7cc551a",
+      "bytes": 47500279,
+      "source": "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/superpoint_lightglue.pth"
+    },
+    "deps/learned-checkpoints/aliked_lightglue_v0-1_arxiv.pth": {
+      "sha256": "d975e965b105311a6143194852297dff4f02aea5cc2e10cecfed966ca0e22503",
+      "bytes": 47632827,
+      "source": "https://github.com/cvg/LightGlue/releases/download/v0.1_arxiv/aliked_lightglue.pth"
+    },
+    "deps/learned-checkpoints/aliked-n16.pth": {
+      "sha256": "5be8704840ed662d9d8c561bf7279c222092674e7eb05fd0feab94899e9d82f2",
+      "bytes": 2738091,
+      "source": "https://raw.githubusercontent.com/Shiaoming/ALIKED/683d7c65197395c0b3f01ebe76e1084a27e73a65/models/aliked-n16.pth"
+    },
+    "vendor/XFeat/weights/xfeat.pt": {
+      "sha256": "0f5187fd7bedd26c7fe6acc9685444493a165a35ecc087b33c2db3627f3ea10b",
+      "bytes": 6247949
+    },
+    "vendor/XFeat/weights/xfeat-lighterglue.pt": {
+      "sha256": "766102df37f11189efe5b0811d1f47c72b22629b79bfabfcfff9d2a2f84654b8",
+      "bytes": 10820795
+    },
+    "deps/learned-wheels/kornia_rs-0.1.9-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl": {
+      "sha256": "d545c3f323d37745228681a71b577e88468d54b965e2194c0e346bb0a969c5f3",
+      "bytes": 2487276
+    },
+    "deps/learned-wheels/kornia-0.7.2-py2.py3-none-any.whl": {
+      "sha256": "411e09ccdc4efde351f90a81f35a6eb9fad3bcf58ac037cbec4d41a8364dd039",
+      "bytes": 825393
+    }
+  },
+  "runtime_models_loaded": false,
+  "inference_executed": false,
+  "existing_torch_requirement": "Reuse system/user torch; never pip-upgrade torch or numpy here"
+}

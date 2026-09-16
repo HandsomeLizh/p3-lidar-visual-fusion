@@ -1,0 +1,202 @@
+name: hardware template - measured calibration required
+use_imu: true
+calibration_confirmed: false
+instantaneous_cloud: false
+left_topic: /camera/left/image_raw
+right_topic: /camera/right/image_raw
+lidar_topic: /ouster/points
+imu_topic: /imu/data
+lidar_input_frame: ''
+point_time_field: t
+point_time_scale: 1.0e-09
+max_scan_duration: 0.2
+input_image_size:
+- 2448
+- 2048
+output_image_size:
+- 816
+- 682
+camera_k:
+- - 2316.620064041787
+  - 0.0
+  - 1230.9520882337595
+- - 0.0
+  - 2316.2422800565905
+  - 990.6850123648671
+- - 0.0
+  - 0.0
+  - 1.0
+distortion:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+base_from_imu:
+- - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+- - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+- - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_lidar:
+- - 0.99979238153889
+  - -0.019805577221191
+  - -0.004788833650211
+  - 0.606527746614407
+- - -0.0198065746223
+  - -0.999803817606889
+  - -0.000160936077148
+  - -0.002299598293482
+- - -0.004784706733462
+  - 0.000255753054894
+  - -0.999988520520035
+  - 0.612012803599003
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_camera_left:
+- - 0.0
+  - -0.421035813367491
+  - 0.907044014291465
+  - 0.529841638180579
+- - -1.0
+  - 0.0
+  - 0.0
+  - 0.129759135607494
+- - 0.0
+  - -0.907044014291465
+  - -0.421035813367491
+  - 0.831680201971904
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_camera_right:
+- - 0.0
+  - -0.421035813367491
+  - 0.907044014291465
+  - 0.529841638180579
+- - -1.0
+  - 0.0
+  - 0.0
+  - -0.120269777698872
+- - 0.0
+  - -0.907044014291465
+  - -0.421035813367491
+  - 0.831680201971904
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+stereo_max_skew: 0.01
+min_range: 0.5
+max_range: 70.0
+max_input_points: 140000
+vision_gate:
+  recovery_frames: 5
+  max_speed: 4.0
+  max_angular_speed: 2.0
+  max_step: 1.0
+  max_angle: 0.5
+  max_gap: 0.5
+min_brightness: 8.0
+min_image_features: 25
+require_vins_features: true
+min_vins_features: 15
+image_quality_tolerance: 0.15
+feature_tolerance: 0.3
+source_wall_timeout: 1.0
+lio_max_speed: 8.0
+lio_max_angular_speed: 3.0
+lio_pose_variance:
+- 0.04
+- 0.04
+- 0.04
+- 0.01
+- 0.01
+- 0.01
+vision_pose_variance:
+- 0.01
+- 0.01
+- 0.01
+- 0.005
+- 0.005
+- 0.005
+map_resolution: 0.2
+cloud_voxel_size: 0.12
+cloud_preview_points: 150000
+map_window: 64.0
+map_publish_period: 2.0
+max_elevation_points: 12000
+pose_tolerance: 0.08
+pose_max_gap: 0.3
+mapping_wait_timeout: 15.0
+tof_sources: []
+semantic_topic: /task2/seg_mask
+semantic_tolerance: 0.15
+tile_cells: 128
+max_resident_tiles: 64
+tile_cache_mib: 128
+max_query_cells: 250000
+pressure_query_cells: 160000
+global_max_cells: 1000000
+global_publish_period: 20.0
+overview_side_cells: 256
+overview_resolution: 1.0
+preview_voxel_size: 0.3
+pose_buffer_samples: 1200
+map_pending_scans: 4
+stereo_queue_depth: 2
+max_image_bytes: 24000000
+max_cloud_bytes: 16000000
+trajectory_max_poses: 5000
+checkpoint_period: 5.0
+min_disk_free_gib: 5.0
+mapper_soft_mib: 1536
+min_system_available_mib: 2048
+process_tree_soft_mib: 6144
+process_tree_stop_mib: 8192
+lidar_cube_side: 160.0
+lidar_detection_range: 40.0
+lidar_map_voxel: 0.4
+max_slope_deg: 35.0
+max_step_m: 0.3
+require_lidar_agreement: true
+visual_pending_samples: 8
+visual_reference_wait: 2.0
+agreement_stamp_tolerance: 0.05
+agreement_pose_max_gap: 0.35
+min_image_contrast: 18.0
+min_feature_coverage: 0.2
+min_image_sharpness: 8.0
+exposure_change_threshold: 65.0
+motion_consistency:
+  translation_floor: 0.15
+  translation_ratio: 0.2
+  rotation_floor: 0.14
+  rotation_ratio: 0.2
+  min_span: 0.5
+  history_seconds: 4.0
+  max_gap: 6.0
+  capacity: 240
+visual_source: vins
+visual_odometry_topic: /fusion/vins_raw
+visual_max_age_sec: 0.5
+visual_future_tolerance_sec: 0.1
+ekf_history_seconds: 10.0
+lidar_backend: voxelmap
+imu_mode: auto
+imu_calibration_confirmed: false
+imu_input_frame: imu_link
+cloud_motion_compensated: false

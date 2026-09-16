@@ -1,0 +1,79 @@
+# Simulation stereo calibration assembled from the two supplied spreadsheets.
+# Intrinsics: nominal simulation camera model from multimodal architecture v7.
+# Principal point/baseline/position: measured RGB10/RGB11 calibration averages.
+# Geometry override confirmed by the user: parallel cameras, 24.9 deg down.
+
+calibration_metadata:
+  source_intrinsics: vehicle_frd_calibration_20260817.xlsx
+  source_hardware: multimodal_sensor_architecture_v7.xlsx
+  profile: simulation_parallel_24p9
+  measured_vehicle_axes: x_forward_y_right_z_down
+  ros_body_axes: x_forward_y_left_z_up
+  geometry_assumptions:
+    - identical left/right mounting rotation
+    - exactly parallel optical axes
+    - measured stereo baseline retained
+    - simulator uses an ideal zero-distortion pinhole model
+    - common focal lengths derived from the specified horizontal/vertical FOV
+    - common principal point is the mean of the measured RGB10/RGB11 values
+    - RGB10 measured vehicle position retained
+    - RGB11 position derived from the baseline along vehicle-right
+
+raw_stereo:
+  width: 2448
+  height: 2048
+  left:
+    name: RGB10
+    k:
+      - [2316.620064041787, 0.0, 1230.9520882337595]
+      - [0.0, 2316.2422800565905, 990.6850123648671]
+      - [0.0, 0.0, 1.0]
+    d: [0.0, 0.0, 0.0, 0.0, 0.0]
+  right:
+    name: RGB11
+    k:
+      - [2316.620064041787, 0.0, 1230.9520882337595]
+      - [0.0, 2316.2422800565905, 990.6850123648671]
+      - [0.0, 0.0, 1.0]
+    d: [0.0, 0.0, 0.0, 0.0, 0.0]
+  # p_RGB10 = T_RGB10_RGB11 * p_RGB11.
+  transform_right_to_left:
+    - [1.0, 0.0, 0.0, 0.25002891330636623]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.0]
+    - [0.0, 0.0, 0.0, 1.0]
+
+mounting:
+  vehicle_axes: x_forward_y_right_z_down
+  camera_axes: x_right_y_down_z_forward
+  downward_pitch_deg: 24.9
+  # p_vehicle = T_vehicle_RGB10 * p_RGB10.
+  transform_vehicle_left:
+    - [0.0, -0.421035813367491, 0.907044014291465, 0.529841638180579]
+    - [1.0, 0.0, 0.0, -0.129759135607494]
+    - [0.0, 0.907044014291465, 0.421035813367491, -0.831680201971904]
+    - [0.0, 0.0, 0.0, 1.0]
+  # p_vehicle = T_vehicle_RGB11 * p_RGB11.
+  transform_vehicle_right:
+    - [0.0, -0.421035813367491, 0.907044014291465, 0.529841638180579]
+    - [1.0, 0.0, 0.0, 0.120269777698872]
+    - [0.0, 0.907044014291465, 0.421035813367491, -0.831680201971904]
+    - [0.0, 0.0, 0.0, 1.0]
+
+source_measurements:
+  image_size_px: [2448, 2048]
+  pixel_size_mm: [0.00345, 0.00345]
+  nominal_focal_length_mm: 8.0
+  nominal_fov_deg: [55.7, 47.7]
+  common_intrinsic_source: nominal_fov_and_measured_principal_point_mean
+  measured_left_principal_point_px: [1234.8338881021152, 1003.643015022512]
+  measured_right_principal_point_px: [1227.070288365404, 977.7270097072222]
+  left_focal_length_mm: 8.236260428724199
+  right_focal_length_mm: 8.268758762710135
+  baseline_m: 0.25002891330636623
+
+depth:
+  min: 0.1
+  max: 100.0
+stereo:
+  epipolar_threshold_px: 3.0

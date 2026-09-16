@@ -1,0 +1,20 @@
+{
+  "VoxelMap": {
+    "commit": "d787ee8ccfb0e509a36adb2c52bd5da97b29c39a",
+    "upstream": "https://github.com/hku-mars/VoxelMap.git",
+    "dirty": false,
+    "ros2_adapter": "src/t3_voxelmap",
+    "compiled": true,
+    "imu_required": false
+  },
+  "PV-LIO": {
+    "commit": "494c27f62f7333d6cc32c26dccaa8d8a971c2c2d",
+    "upstream": "https://github.com/HViktorTsoi/PV-LIO.git",
+    "dirty": false,
+    "ros2_adapter": null,
+    "compiled": false,
+    "tested": false,
+    "imu_required": true,
+    "reason": "Not evaluated: selected historical bags lack IMU. Current live IMU stream and calibration require separate verification."
+  }
+}

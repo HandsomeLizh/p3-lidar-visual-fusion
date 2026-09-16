@@ -1,0 +1,16 @@
+{
+  "python_syntax_files": 78,
+  "shell_syntax_files": 18,
+  "dependency_metadata": {
+    "torch": "2.8.0",
+    "torchvision": "0.23.0",
+    "numpy": "1.25.0",
+    "scipy": "1.8.0",
+    "opencv-python": "4.8.1.78",
+    "kornia": "0.7.2",
+    "kornia_rs": "0.1.9",
+    "tqdm": "4.70.0"
+  },
+  "runtime_tests_executed": false,
+  "inference_executed": false
+}

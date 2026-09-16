@@ -1,0 +1,40 @@
+{
+  "python_syntax_files": 78,
+  "shell_syntax_files": 18,
+  "dependency_metadata": {
+    "torch": "2.8.0",
+    "torchvision": "0.23.0",
+    "numpy": "1.25.0",
+    "scipy": "1.8.0",
+    "opencv-python": "4.8.1.78",
+    "kornia": "0.7.2",
+    "kornia_rs": "0.1.9",
+    "tqdm": "4.70.0"
+  },
+  "runtime_tests_executed": true,
+  "inference_executed": true,
+  "checked_at_utc": "2026-09-15T14:13:21.056069+00:00",
+  "packages_built": 6,
+  "build_exit_code": 0,
+  "source_manifest_matches": true,
+  "installed_python_mismatches": [],
+  "learned_frontend_implemented": true,
+  "prepared_backends": [
+    "xfeat_lighterglue",
+    "xfeat_mnn",
+    "superpoint_lightglue",
+    "aliked_lightglue"
+  ],
+  "model_assets_verified": 8,
+  "model_inference_executed": true,
+  "opencv_mixed_version_warning_pending": true,
+  "build_log": "logs/build_voxelmap_default.log",
+  "runtime_evidence": [
+    "results/short_xfeat_reliable_20260915_211742/assessment.json",
+    "results/adaptive_guard_regression/verification.json",
+    "docs/registration_quality_verification.json",
+    "results/short_voxelmap_adaptive_20260915/assessment.json"
+  ],
+  "point_lio_retired": true,
+  "current_lidar_backend": "voxelmap"
+}

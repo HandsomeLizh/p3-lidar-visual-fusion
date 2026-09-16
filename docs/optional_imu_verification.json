@@ -1,0 +1,174 @@
+{
+  "build_passed": true,
+  "built_packages": 6,
+  "build_log": "logs/build_optional_imu.log",
+  "dynamics_unit_test_passed": true,
+  "ros_validation": {
+    "recorded_no_imu_regression": {
+      "frames": 12,
+      "bag": "/home/yanfa/Env_X/InterFace/bags/20260824_235238",
+      "max_pose_covariance_difference": {
+        "auto": 0.0,
+        "off": 0.0
+      },
+      "qualification": "Same raw LiDAR, timestamps and parameters against preserved pre-change binary; no IMU or truth published."
+    },
+    "synthetic_switching": {
+      "modes": [
+        {
+          "stamp_sec": 2000,
+          "mode": "constant_velocity",
+          "reason": "no_imu",
+          "initialized": false,
+          "samples_used": 0,
+          "integrated_seconds": 0,
+          "buffered": 0,
+          "accepted": 0,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 0,
+          "imu_scans": 0,
+          "cv_scans": 1
+        },
+        {
+          "stamp_sec": 2001.2,
+          "mode": "constant_velocity",
+          "reason": "missing_interval_start",
+          "initialized": false,
+          "samples_used": 0,
+          "integrated_seconds": 0,
+          "buffered": 120,
+          "accepted": 120,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 0,
+          "imu_scans": 0,
+          "cv_scans": 2
+        },
+        {
+          "stamp_sec": 2001.3,
+          "mode": "imu",
+          "reason": "imu",
+          "initialized": true,
+          "samples_used": 11,
+          "integrated_seconds": 0.0999999999999,
+          "buffered": 130,
+          "accepted": 130,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 1,
+          "imu_scans": 1,
+          "cv_scans": 2
+        },
+        {
+          "stamp_sec": 2001.4,
+          "mode": "imu",
+          "reason": "imu",
+          "initialized": true,
+          "samples_used": 11,
+          "integrated_seconds": 0.1,
+          "buffered": 140,
+          "accepted": 140,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 1,
+          "imu_scans": 2,
+          "cv_scans": 2
+        },
+        {
+          "stamp_sec": 2001.5,
+          "mode": "constant_velocity",
+          "reason": "imu_timeout",
+          "initialized": true,
+          "samples_used": 0,
+          "integrated_seconds": 0,
+          "buffered": 140,
+          "accepted": 140,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 2,
+          "imu_scans": 2,
+          "cv_scans": 3
+        },
+        {
+          "stamp_sec": 2001.6,
+          "mode": "constant_velocity",
+          "reason": "recovering_imu",
+          "initialized": true,
+          "samples_used": 0,
+          "integrated_seconds": 0,
+          "buffered": 151,
+          "accepted": 151,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 2,
+          "imu_scans": 2,
+          "cv_scans": 4
+        },
+        {
+          "stamp_sec": 2001.7,
+          "mode": "constant_velocity",
+          "reason": "recovering_imu",
+          "initialized": true,
+          "samples_used": 0,
+          "integrated_seconds": 0,
+          "buffered": 161,
+          "accepted": 161,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 2,
+          "imu_scans": 2,
+          "cv_scans": 5
+        },
+        {
+          "stamp_sec": 2001.8,
+          "mode": "imu",
+          "reason": "imu",
+          "initialized": true,
+          "samples_used": 11,
+          "integrated_seconds": 0.0999999999999,
+          "buffered": 171,
+          "accepted": 171,
+          "rejected": 0,
+          "evicted": 0,
+          "transitions": 3,
+          "imu_scans": 3,
+          "cv_scans": 5
+        },
+        {
+          "stamp_sec": 2001.9,
+          "mode": "constant_velocity",
+          "reason": "imu_timeout",
+          "initialized": true,
+          "samples_used": 0,
+          "integrated_seconds": 0,
+          "buffered": 171,
+          "accepted": 171,
+          "rejected": 5,
+          "evicted": 0,
+          "transitions": 4,
+          "imu_scans": 3,
+          "cv_scans": 6
+        }
+      ],
+      "maximum_stationary_position_step_m": 1.3905998830287286e-08,
+      "qualification": "Synthetic IMU tests transport/fallback only; not real-sensor accuracy evidence."
+    },
+    "passed": true
+  },
+  "config_validation": {
+    "auto": "auto",
+    "off": "off",
+    "False": "off",
+    "external_clock_cli": true
+  },
+  "scope": "Optional calibrated IMU prediction and covariance propagation; CV fallback, no raw spinning-cloud deskew",
+  "real_imu_accuracy_tested": false,
+  "source_sha256": {
+    "src/t3_voxelmap/src/voxelmap_node.cpp": "caae2967db1d3810ffed1dfc1f63d92f364175f0112ad5e95c671046e7d4e9ad",
+    "src/t3_voxelmap/include/optional_imu.hpp": "b6c5c82fd67f96db43e08eaf586e89a4f7c0b3159cdf4b331e48d9e4b71f0408",
+    "scripts/generate_config.py": "9aab34af6c6d625639ad8ae133d21f02f0e333a7f80cda39b2f96353fbbe4376",
+    "scripts/fusion.launch.py": "0b67828b1c45386889e6c1a641a851ff6b7e7623a83dfaf12e1478a0c8a7e633",
+    "src/t3_lidar_visual_fusion/t3_lidar_visual_fusion/sensor_adapter.py": "f3f7195ed901a772e7bdb26f9bf54ce4c2bb7530a8a1e5e2cde75e6ad220b65c"
+  }
+}

@@ -1,0 +1,44 @@
+--- a/include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp
++++ b/include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp
+@@ -53,6 +53,7 @@
+ #include "../mtk/startIdx.hpp"
+ #include "../mtk/build_manifold.hpp"
+ #include "util.hpp"
++#include "bounded_gain.hpp"
+ 
+ namespace esekfom {
+ 
+@@ -204,19 +205,11 @@
+ 			// dx_new = dx;
+ 			// P_ = P_propagated;
+ 
+-			Matrix<scalar_type, n, Eigen::Dynamic> PHT;
+-			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;
+-			Matrix<scalar_type, n, Eigen::Dynamic> K_;
+-			// if(n > dof_Measurement)
+-			{
+-				PHT = P_. template block<n, 12>(0, 0) * h_x.transpose();
+-				HPHT = h_x * PHT.topRows(12);
+-				for (int m = 0; m < dof_Measurement; m++)
+-				{
+-					HPHT(m, m) += m_noise;
+-				}
+-				K_= PHT*HPHT.inverse();
+-			}
++            Matrix<scalar_type, n, Eigen::Dynamic> K_;
++            Matrix<scalar_type, n, n> posterior;
++            if (!scalar_noise_gain<scalar_type, n>(P_, h_x, scalar_type(m_noise), K_, posterior)) {
++                return false;
++            }
+ 			Matrix<scalar_type, n, 1> dx_ = K_ * z; // - h) + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
+ 			// state x_before = x_;
+ 
+@@ -281,7 +274,7 @@
+ 			// }
+ 			// if(n > dof_Measurement)
+ 			{
+-				P_ = P_ - K_*h_x*P_. template block<12, n>(0, 0);
++				P_ = posterior;
+ 			}
+ 		}
+ 		return true;

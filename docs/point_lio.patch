@@ -1,0 +1,536 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 75e0b30..f414d2c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -41,6 +41,7 @@ find_package(rclcpp REQUIRED)
+ find_package(rclpy REQUIRED)
+ find_package(geometry_msgs REQUIRED)
+ find_package(nav_msgs REQUIRED)
++find_package(std_msgs REQUIRED)
+ find_package(sensor_msgs REQUIRED)
+ find_package(pcl_ros REQUIRED)
+ find_package(pcl_conversions REQUIRED)
+@@ -74,6 +75,8 @@ ament_target_dependencies(pointlio_mapping
+         rclpy
+         geometry_msgs
+         nav_msgs
++  std_msgs
++        std_msgs
+         sensor_msgs
+         pcl_ros
+         pcl_conversions
+@@ -100,6 +103,7 @@ ament_export_dependencies(rclcpp
+   rclpy
+   geometry_msgs
+   nav_msgs
++  std_msgs
+   sensor_msgs
+   pcl_ros
+   pcl_conversions
+diff --git a/include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp b/include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp
+index 742e117..d2a476e 100644
+--- a/include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp
++++ b/include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp
+@@ -53,6 +53,7 @@
+ #include "../mtk/startIdx.hpp"
+ #include "../mtk/build_manifold.hpp"
+ #include "util.hpp"
++#include "bounded_gain.hpp"
+ 
+ namespace esekfom {
+ 
+@@ -204,19 +205,11 @@ public:
+ 			// dx_new = dx;
+ 			// P_ = P_propagated;
+ 
+-			Matrix<scalar_type, n, Eigen::Dynamic> PHT;
+-			Matrix<scalar_type, Eigen::Dynamic, Eigen::Dynamic> HPHT;
+-			Matrix<scalar_type, n, Eigen::Dynamic> K_;
+-			// if(n > dof_Measurement)
+-			{
+-				PHT = P_. template block<n, 12>(0, 0) * h_x.transpose();
+-				HPHT = h_x * PHT.topRows(12);
+-				for (int m = 0; m < dof_Measurement; m++)
+-				{
+-					HPHT(m, m) += m_noise;
+-				}
+-				K_= PHT*HPHT.inverse();
+-			}
++            Matrix<scalar_type, n, Eigen::Dynamic> K_;
++            Matrix<scalar_type, n, n> posterior;
++            if (!scalar_noise_gain<scalar_type, n>(P_, h_x, scalar_type(m_noise), K_, posterior)) {
++                return false;
++            }
+ 			Matrix<scalar_type, n, 1> dx_ = K_ * z; // - h) + (K_x - Matrix<scalar_type, n, n>::Identity()) * dx_new; 
+ 			// state x_before = x_;
+ 
+@@ -281,7 +274,7 @@ public:
+ 			// }
+ 			// if(n > dof_Measurement)
+ 			{
+-				P_ = P_ - K_*h_x*P_. template block<12, n>(0, 0);
++				P_ = posterior;
+ 			}
+ 		}
+ 		return true;
+diff --git a/package.xml b/package.xml
+index 01ba0ff..df93582 100644
+--- a/package.xml
++++ b/package.xml
+@@ -37,4 +37,5 @@
+   <export>
+     <build_type>ament_cmake</build_type>
+   </export>
++  <depend>std_msgs</depend>
+ </package>
+diff --git a/src/Estimator.cpp b/src/Estimator.cpp
+index 912e98b..af8fdd2 100644
+--- a/src/Estimator.cpp
++++ b/src/Estimator.cpp
+@@ -1,5 +1,7 @@
+ // #include <../include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp>
+ #include "Estimator.h"
++#include "output_motion.hpp"
++RegistrationQuality registration_quality;
+ 
+ PointCloudXYZI::Ptr normvec(new PointCloudXYZI(100000, 1));
+ std::vector<int> time_seq;
+@@ -52,6 +54,7 @@ Eigen::Matrix<double, 30, 30> process_noise_cov_output()
+ 	cov.setZero();
+ 	cov.block<3, 3>(12, 12).diagonal() << vel_cov, vel_cov, vel_cov;
+ 	cov.block<3, 3>(15, 15).diagonal() << gyr_cov_output, gyr_cov_output, gyr_cov_output;
++	if (!imu_en) return cov; // Acceleration and bias states are inactive without IMU.
+ 	cov.block<3, 3>(18, 18).diagonal() << acc_cov_output, acc_cov_output, acc_cov_output;
+ 	cov.block<3, 3>(24, 24).diagonal() << b_gyr_cov, b_gyr_cov, b_gyr_cov;
+ 	cov.block<3, 3>(27, 27).diagonal() << b_acc_cov, b_acc_cov, b_acc_cov;
+@@ -80,14 +83,7 @@ Eigen::Matrix<double, 24, 1> get_f_input(state_input &s, const input_ikfom &in)
+ 
+ Eigen::Matrix<double, 30, 1> get_f_output(state_output &s, const input_ikfom &in)
+ {
+-	Eigen::Matrix<double, 30, 1> res = Eigen::Matrix<double, 30, 1>::Zero();
+-	vect3 a_inertial = s.rot.normalized() * s.acc; 
+-	for(int i = 0; i < 3; i++ ){
+-		res(i) = s.vel[i];
+-		res(i + 3) = s.omg[i]; 
+-		res(i + 12) = a_inertial[i] + s.gravity[i]; 
+-	}
+-	return res;
++	return point_lio_motion::derivative(s, imu_en);
+ }
+ 
+ Eigen::Matrix<double, 24, 24> df_dx_input(state_input &s, const input_ikfom &in)
+@@ -120,16 +116,7 @@ Eigen::Matrix<double, 24, 24> df_dx_input(state_input &s, const input_ikfom &in)
+ 
+ Eigen::Matrix<double, 30, 30> df_dx_output(state_output &s, const input_ikfom &in)
+ {
+-	Eigen::Matrix<double, 30, 30> cov = Eigen::Matrix<double, 30, 30>::Zero();
+-	cov.template block<3, 3>(0, 12) = Eigen::Matrix3d::Identity();
+-	cov.template block<3, 3>(12, 3) = -s.rot.normalized().toRotationMatrix()*MTK::hat(s.acc);
+-	cov.template block<3, 3>(12, 18) = s.rot.normalized().toRotationMatrix();
+-	// Eigen::Matrix<state_ikfom::scalar, 2, 1> vec = Eigen::Matrix<state_ikfom::scalar, 2, 1>::Zero();
+-	// Eigen::Matrix<state_ikfom::scalar, 3, 2> grav_matrix;
+-	// s.S2_Mx(grav_matrix, vec, 21);
+-	cov.template block<3, 3>(12, 21) = Eigen::Matrix3d::Identity(); // grav_matrix; 
+-	cov.template block<3, 3>(3, 15) = Eigen::Matrix3d::Identity(); 
+-	return cov;
++	return point_lio_motion::jacobian(s, imu_en);
+ }
+ 
+ // Eigen::Matrix<double, 30, 15> df_dw_output(state_output &s)
+@@ -185,6 +172,7 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
+ 	pabcd.setZero();
+ 	normvec->resize(time_seq[k]);
+ 	int effect_num_k = 0;
++	registration_quality.candidates += time_seq[k];
+ 	for (int j = 0; j < time_seq[k]; j++)
+ 	{
+ 		PointType &point_body_j  = feats_down_body->points[idx+j+1];
+@@ -261,6 +249,7 @@ void h_model_input(state_input &s, esekfom::dyn_share_modified<double> &ekfom_da
+ 			m++;
+ 		}
+ 	}
++	registration_quality.add(ekfom_data.h_x, ekfom_data.z, 0);
+ 	effct_feat_num += effect_num_k;
+ }
+ 
+@@ -272,6 +261,7 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
+ 	
+ 	normvec->resize(time_seq[k]);
+ 	int effect_num_k = 0;
++	registration_quality.candidates += time_seq[k];
+ 	for (int j = 0; j < time_seq[k]; j++)
+ 	{
+ 		PointType &point_body_j  = feats_down_body->points[idx+j+1];
+@@ -349,6 +339,7 @@ void h_model_output(state_output &s, esekfom::dyn_share_modified<double> &ekfom_
+ 			m++;
+ 		}
+ 	}
++	registration_quality.add(ekfom_data.h_x, ekfom_data.z, 0);
+ 	effct_feat_num += effect_num_k;
+ }
+ 
+diff --git a/src/Estimator.h b/src/Estimator.h
+index 6e0c552..f138aff 100644
+--- a/src/Estimator.h
++++ b/src/Estimator.h
+@@ -4,6 +4,8 @@
+ #include <../include/IKFoM/IKFoM_toolkit/esekfom/esekfom.hpp>
+ #include "common_lib.h"
+ #include "parameters.h"
++#include "registration_quality.hpp"
++extern RegistrationQuality registration_quality;
+ #include <pcl_conversions/pcl_conversions.h>
+ #include <pcl/point_cloud.h>
+ #include <pcl/point_types.h>
+diff --git a/src/laserMapping.cpp b/src/laserMapping.cpp
+index b6d5f4a..52630d6 100644
+--- a/src/laserMapping.cpp
++++ b/src/laserMapping.cpp
+@@ -3,6 +3,8 @@
+ #include <cmath>
+ #include <thread>
+ #include <fstream>
++#include <sstream>
++#include <std_msgs/msg/string.hpp>
+ #include <csignal>
+ #include <Python.h>
+ #include <so3_math.h>
+@@ -36,6 +38,7 @@ mutex mtx_buffer;
+ condition_variable sig_buffer;
+ 
+ string root_dir = ROOT_DIR;
++rclcpp::Publisher<std_msgs::msg::String>::SharedPtr quality_publisher;
+ 
+ int feats_down_size = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
+ 
+@@ -199,7 +202,7 @@ void lasermap_fov_segment() {
+ 
+ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+     mtx_buffer.lock();
+-    scan_count++;
++    scan_count = (scan_count + 1) % MAXN;
+     double preprocess_start_time = omp_get_wtime();
+     if (get_time_sec(msg->header.stamp) < last_timestamp_lidar) {
+         RCLCPP_ERROR(logger, "lidar loop back, clear buffer");
+@@ -261,6 +264,11 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+         lidar_buffer.emplace_back(ptr);
+         time_buffer.emplace_back(get_time_sec(msg->header.stamp));
+     }
++    // Keep complete scan/time pairs bounded when an IMU source stalls.
++    while (lidar_buffer.size() > 4) {
++        lidar_buffer.pop_front();
++        time_buffer.pop_front();
++    }
+     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+     mtx_buffer.unlock();
+     sig_buffer.notify_all();
+@@ -269,7 +277,7 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+ // void livox_pcl_cbk(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg) {
+ //     mtx_buffer.lock();
+ //     double preprocess_start_time = omp_get_wtime();
+-//     scan_count++;
++//     scan_count = (scan_count + 1) % MAXN;
+ //     if (get_time_sec(msg->header.stamp) < last_timestamp_lidar) {
+ //         RCLCPP_ERROR(logger, "lidar loop back, clear buffer");
+ 
+@@ -352,6 +360,7 @@ void imu_cbk(const sensor_msgs::msg::Imu::SharedPtr msg_in) {
+         return;
+     }
+ 
++    if (imu_deque.size() >= 4000) imu_deque.pop_front();
+     imu_deque.emplace_back(msg);
+     last_timestamp_imu = timestamp;
+     mtx_buffer.unlock();
+@@ -649,26 +658,38 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
+     set_posestamp(odomAftMapped.pose.pose);
+     set_twist(odomAftMapped.twist.twist);
+ 
+-    if (odom_only){
+-        Matrix3d cov = kf_output.get_P().block<3, 3>(0, 0);
+-
+-        // Get the position components (first 3x3)
+-        for (int i = 0; i < 3; i++) {
+-            for (int j = 0; j < 3; j++) {
+-                odomAftMapped.pose.covariance[6 * i + j] = cov(i, j);
+-            }
+-        }
+-
+-        odomAftMapped.pose.covariance[21] = 0.0;    // Covariance for roll
+-        odomAftMapped.pose.covariance[28] = 0.0;    // Covariance for pitch
+-        odomAftMapped.pose.covariance[35] = 0.05;   // Covariance for yaw
+-
+-        odomAftMapped.twist.covariance[0] = 0.1;    // Covariance for linear velocity on x
+-        odomAftMapped.twist.covariance[7] = 0.1;    // Covariance for linear velocity on y
+-        odomAftMapped.twist.covariance[14] = 0.0;   // Covariance for linear velocity on z
+-        odomAftMapped.twist.covariance[21] = 0.0;  // Covariance for angular velocity (roll)
+-        odomAftMapped.twist.covariance[28] = 0.0;  // Covariance for angular velocity (pitch)
+-        odomAftMapped.twist.covariance[35] = 0.05;  // Covariance for angular velocity (yaw)
++    Eigen::Matrix<double,6,6> pose_cov;
++    Eigen::Matrix3d rotation;
++    if (!use_imu_as_input) {
++        pose_cov = kf_output.get_P().block<6,6>(0,0);
++        rotation = kf_output.x_.rot.toRotationMatrix();
++    } else {
++        pose_cov = kf_input.get_P().block<6,6>(0,0);
++        rotation = kf_input.x_.rot.toRotationMatrix();
++    }
++    Eigen::Matrix<double,6,6> basis = Eigen::Matrix<double,6,6>::Identity();
++    basis.bottomRightCorner<3,3>() = rotation;
++    pose_cov = basis * pose_cov * basis.transpose();
++    const bool geometry_reliable = registration_quality.reliable();
++    // An optimistic motion prior must not conceal an unobservable scan.
++    if (!geometry_reliable) pose_cov.diagonal().array() += 1000.;
++    for (int i=0;i<6;++i)
++        for (int j=0;j<6;++j)
++            odomAftMapped.pose.covariance[6*i+j] = pose_cov(i,j);
++    if (quality_publisher) {
++        std::ostringstream text;
++        text.precision(16);
++        text << "{\"stamp_sec\":" << get_time_sec(odomAftMapped.header.stamp)
++             << ",\"matched\":" << registration_quality.matched
++             << ",\"candidates\":" << registration_quality.candidates
++             << ",\"match_ratio\":" << registration_quality.match_ratio()
++             << ",\"residual_rms_m\":" << registration_quality.residual_rms()
++             << ",\"translation_eigen_ratio\":" << registration_quality.translation_ratio()
++             << ",\"pose_eigen_ratio\":" << registration_quality.pose_ratio()
++             << ",\"reliable\":" << (geometry_reliable ? "true" : "false") << "}";
++        std_msgs::msg::String report;
++        report.data = text.str();
++        quality_publisher->publish(report);
+     }
+ 
+     pubOdomAftMapped->publish(odomAftMapped);
+@@ -778,9 +799,9 @@ int main(int argc, char **argv) {
+     // if (p_pre->lidar_type == AVIA) {
+     //     sub_pcl_livox_ = nh->create_subscription<livox_ros_driver2::msg::CustomMsg>(lid_topic, 20, livox_pcl_cbk);
+     // } else {
+-    sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::SensorDataQoS(), standard_pcl_cbk);
++    sub_pcl = nh->create_subscription<sensor_msgs::msg::PointCloud2>(lid_topic, rclcpp::QoS(rclcpp::KeepLast(2)).reliable(), standard_pcl_cbk);
+     // }
+-    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 200000, imu_cbk);
++    auto sub_imu = nh->create_subscription<sensor_msgs::msg::Imu>(imu_topic, 400, imu_cbk);
+ 
+     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes;
+     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFullRes_body;
+@@ -790,29 +811,30 @@ int main(int argc, char **argv) {
+ 
+     if (!odom_only){
+         pubLaserCloudFullRes = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+-                ("/cloud_registered", 100000);
++                ("/cloud_registered", 10);
+         pubLaserCloudFullRes_body = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+-                ("/cloud_registered_body", 100000);
++                ("/cloud_registered_body", 10);
+         pubLaserCloudEffect = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+-                ("/cloud_effected", 100000);
++                ("/cloud_effected", 10);
+         pubLaserCloudMap = nh->create_publisher<sensor_msgs::msg::PointCloud2>
+-                ("/Laser_map", 100000);
++                ("/Laser_map", 10);
+         pubPath = nh->create_publisher<nav_msgs::msg::Path>
+-                ("/path", 100000);
++                ("/path", 10);
+     }
+ 
+     // Choose topic name depending on odom_only value
+     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped;
+     if (odom_only){
+         pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
+-                ("/odom_corrected", 100000);
++                ("/odom_corrected", 10);
+     } else {
+         pubOdomAftMapped = nh->create_publisher<nav_msgs::msg::Odometry>
+-                ("/aft_mapped_to_init", 100000);
++                ("/aft_mapped_to_init", 10);
+     }
+ 
+     //auto plane_pub = nh->create_publisher<visualization_msgs::msg::Marker>
+     //        ("/planner_normal", 1000);
++    quality_publisher = nh->create_publisher<std_msgs::msg::String>("/fusion/lidar_quality", 10);
+     auto tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(nh);
+ //------------------------------------------------------------------------------------------------------
+     signal(SIGINT, SigHandle);
+@@ -933,8 +955,8 @@ int main(int argc, char **argv) {
+             t2 = omp_get_wtime();
+ 
+             /*** iterated state estimation ***/
+-            crossmat_list.reserve(feats_down_size);
+-            pbody_list.reserve(feats_down_size);
++            crossmat_list.resize(feats_down_size);
++            pbody_list.resize(feats_down_size);
+             // pbody_ext_list.reserve(feats_down_size);
+ 
+             for (size_t i = 0; i < feats_down_body->size(); i++) {
+@@ -959,6 +981,7 @@ int main(int argc, char **argv) {
+             if (!use_imu_as_input) {
+                 bool imu_upda_cov = false;
+                 effct_feat_num = 0;
++                registration_quality.reset();
+                 /**** point by point update ****/
+ 
+                 double pcl_beg_time = Measures.lidar_beg_time;
+@@ -1098,6 +1121,7 @@ int main(int argc, char **argv) {
+             } else {
+                 bool imu_prop_cov = false;
+                 effct_feat_num = 0;
++                registration_quality.reset();
+ 
+                 double pcl_beg_time = Measures.lidar_beg_time;
+                 idx = -1;
+@@ -1277,7 +1301,7 @@ int main(int argc, char **argv) {
+                 s_plot[time_log_counter] = t5 - t0;
+                 s_plot2[time_log_counter] = feats_undistort->points.size();
+                 s_plot3[time_log_counter] = aver_time_consu;
+-                time_log_counter++;
++                time_log_counter = (time_log_counter + 1) % MAXN;
+                 printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f propogate: %0.6f \n",
+                        t1 - t0, aver_time_match, aver_time_solve, t3 - t1, t5 - t3, aver_time_consu, aver_time_icp,
+                        aver_time_propag);
+diff --git a/include/IKFoM/IKFoM_toolkit/esekfom/bounded_gain.hpp b/include/IKFoM/IKFoM_toolkit/esekfom/bounded_gain.hpp
+new file mode 100644
+index 0000000..ff53e71
+--- /dev/null
++++ b/include/IKFoM/IKFoM_toolkit/esekfom/bounded_gain.hpp
+@@ -0,0 +1,49 @@
++// Memory-bounded scalar-noise Kalman update for large simultaneous LiDAR batches.
++// The state-space solve is equivalent to K=P H' (H P H'+noise I)^-1.
++#pragma once
++#include <Eigen/Dense>
++#include <cmath>
++
++namespace esekfom {
++template <typename Scalar, int N>
++bool scalar_noise_gain(
++    const Eigen::Matrix<Scalar, N, N>& covariance,
++    const Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>& h,
++    Scalar noise,
++    Eigen::Matrix<Scalar, N, Eigen::Dynamic>& gain,
++    Eigen::Matrix<Scalar, N, N>& posterior) {
++  using State = Eigen::Matrix<Scalar, N, N>;
++  using Dynamic = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
++  const Eigen::Index m = h.rows(), d = h.cols();
++  if (m < 1 || d < 1 || d > N || !std::isfinite(noise) || noise <= 0 ||
++      !covariance.allFinite() || !h.allFinite()) return false;
++  const State prior = (Scalar(.5) * (covariance + covariance.transpose())).eval();
++  if (m <= N) {
++    const Eigen::Matrix<Scalar, N, Eigen::Dynamic> pht =
++        prior.leftCols(d) * h.transpose();
++    Dynamic innovation = h * pht.topRows(d);
++    innovation.diagonal().array() += noise;
++    Eigen::LLT<Dynamic> solve(innovation);
++    if (solve.info() != Eigen::Success) return false;
++    gain = solve.solve(pht.transpose()).transpose();
++    // Joseph form preserves positive covariance under floating-point roundoff.
++    State remainder = State::Identity();
++    remainder.leftCols(d).noalias() -= gain * h;
++    posterior = remainder * prior * remainder.transpose()
++                + noise * gain * gain.transpose();
++  } else {
++    Eigen::LLT<State> prior_factor(prior);
++    if (prior_factor.info() != Eigen::Success) return false;
++    const State lower = prior_factor.matrixL();
++    const Dynamic hl = h * lower.topRows(d);
++    State information = State::Identity();
++    information.noalias() += hl.transpose() * hl / noise;
++    Eigen::LLT<State> solve(information);
++    if (solve.info() != Eigen::Success) return false;
++    gain.noalias() = lower * solve.solve((hl.transpose() / noise).eval());
++    posterior.noalias() = lower * solve.solve(lower.transpose());
++  }
++  posterior = (Scalar(.5) * (posterior + posterior.transpose())).eval();
++  return gain.allFinite() && posterior.allFinite();
++}
++}  // namespace esekfom
+diff --git a/include/output_motion.hpp b/include/output_motion.hpp
+new file mode 100644
+index 0000000..b6f0321
+--- /dev/null
++++ b/include/output_motion.hpp
+@@ -0,0 +1,32 @@
++#pragma once
++#include <Eigen/Core>
++#include <Eigen/Geometry>
++
++namespace point_lio_motion {
++// Output-state ordering: p, R, R_ext, t_ext, v, omega, a, g, bg, ba.
++// With no IMU, acceleration/gravity are unobserved and must not drive motion.
++template<class State>
++Eigen::Matrix<double,30,1> derivative(const State& s, bool has_imu) {
++    Eigen::Matrix<double,30,1> f=Eigen::Matrix<double,30,1>::Zero();
++    f.template segment<3>(0)=s.vel;
++    f.template segment<3>(3)=s.omg;
++    if (has_imu)
++        f.template segment<3>(12)=s.rot.normalized()*s.acc+s.gravity;
++    return f;
++}
++template<class State>
++Eigen::Matrix<double,30,30> jacobian(const State& s, bool has_imu) {
++    Eigen::Matrix<double,30,30> F=Eigen::Matrix<double,30,30>::Zero();
++    F.template block<3,3>(0,12).setIdentity();
++    F.template block<3,3>(3,15).setIdentity();
++    if (has_imu) {
++        const auto R=s.rot.normalized().toRotationMatrix();
++        Eigen::Matrix3d skew;
++        skew << 0.,-s.acc[2],s.acc[1],s.acc[2],0.,-s.acc[0],-s.acc[1],s.acc[0],0.;
++        F.template block<3,3>(12,3)=-R*skew;
++        F.template block<3,3>(12,18)=R;
++        F.template block<3,3>(12,21).setIdentity();
++    }
++    return F;
++}
++}
+diff --git a/include/registration_quality.hpp b/include/registration_quality.hpp
+new file mode 100644
+index 0000000..5ead9ae
+--- /dev/null
++++ b/include/registration_quality.hpp
+@@ -0,0 +1,49 @@
++#pragma once
++#include <Eigen/Core>
++#include <Eigen/Geometry>
++#include <Eigen/Eigenvalues>
++#include <algorithm>
++#include <cmath>
++
++// Current-scan geometry evidence, independent of the motion prior or ground truth.
++// Point-to-plane normals must constrain translation in several directions; the
++// normalized six-dimensional information must also constrain rotation.
++struct RegistrationQuality {
++    using M6 = Eigen::Matrix<double, 6, 6>;
++    M6 information = M6::Zero();
++    double residual_square = 0.;
++    int matched = 0, candidates = 0;
++    void reset() { information.setZero(); residual_square = 0.; matched = candidates = 0; }
++    void add(const Eigen::MatrixXd &h, const Eigen::VectorXd &residual, int considered) {
++        candidates += considered;
++        if (h.rows() == 0) return;
++        information.noalias() += h.leftCols(6).transpose() * h.leftCols(6);
++        residual_square += residual.squaredNorm();
++        matched += h.rows();
++    }
++    double match_ratio() const { return double(matched) / std::max(1, candidates); }
++    double residual_rms() const { return matched ? std::sqrt(residual_square / matched) : 1e6; }
++    double translation_ratio() const {
++        if (!matched) return 0.;
++        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(information.topLeftCorner<3,3>());
++        if (solver.info() != Eigen::Success) return 0.;
++        return std::max(0., solver.eigenvalues()[0]) / std::max(1e-12, solver.eigenvalues()[2]);
++    }
++    double pose_ratio() const {
++        if (!matched) return 0.;
++        M6 normalized = information;
++        // Remove the arbitrary metre/radian lever-arm scale before testing rank.
++        double lever = std::sqrt(std::max(1e-12, information.bottomRightCorner<3,3>().trace()) /
++                                 std::max(1e-12, information.topLeftCorner<3,3>().trace()));
++        lever = std::max(.1, lever);
++        normalized.rightCols<3>() /= lever;
++        normalized.bottomRows<3>() /= lever;
++        Eigen::SelfAdjointEigenSolver<M6> solver(normalized);
++        if (solver.info() != Eigen::Success) return 0.;
++        return std::max(0., solver.eigenvalues()[0]) / std::max(1e-12, solver.eigenvalues()[5]);
++    }
++    bool reliable() const {
++        return matched >= 50 && match_ratio() >= .15 && residual_rms() <= .25 &&
++               translation_ratio() >= .02 && pose_ratio() >= .003;
++    }
++};
