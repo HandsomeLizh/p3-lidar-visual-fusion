@@ -1,223 +1,170 @@
 # LiDAR＋视觉建图：简明使用说明
 
-默认使用 **VoxelMap＋XFeat/LighterGlue**，当前不需要 IMU。已编译，可直接启动。
+更新：2026-09-16。算法为 **VoxelMap＋XFeat/LighterGlue**；仿真配置当前不融合 IMU。日常保留两个启动入口：**采集＋人工控制**、**建图＋RViz**；需要选点导航时另外启动 P4。
 
-## 1. 连接远程
+## 1. 连接机器
 
-在 Windows 终端执行：
+在 Windows 终端连接；下文命令均在远程执行：
 
 ```bash
 ssh yanfa@192.168.100.216
 cd /home/yanfa/P3/lidar_visual_fusion
 ```
 
-以下命令均在这个远程目录执行。RViz 窗口显示在远程机器桌面上。
+UE 需已启动。控制窗口和 RViz 显示在**远程机器桌面**，SSH 终端本身不显示这些窗口。同一台仿真车由一位操作人员控制；有人使用时先协调，不要同时启动测试或重启程序。
 
-## 2. 历史 bag 建图
+## 2. 实时采集、行驶和建图
 
-**先推荐运行 short bag：**
-
-```bash
-./start_short_bag.sh fusion
-```
-
-自动启动视觉＋LiDAR 融合、高程图、点云图和原 P3 的 RViz 界面。
-
-其他选择（任选一个，切换前先执行 `./stop.sh`）：
+### 终端 A：采集＋车辆控制窗口
 
 ```bash
-# 只用 LiDAR，回放同一个 short bag
-./start_short_bag.sh lidar
-
-# 20260824_235238 的前约 10 分钟，视觉＋LiDAR
-./start_long_bag.sh
-```
-
-保持默认原速回放即可。每次结果目录会在启动终端打印，也可通过 `./status.sh` 查看。
-
-## 3. 仿真车边走边建图
-
-**UE 已启动后，开两个 SSH 终端。两个脚本分别管理自己的模块，车辆由人控制。**
-
-### 终端 A：一键启动采集、车辆控制和控制窗口
-
-```bash
-ssh yanfa@192.168.100.216
 cd /home/yanfa/P3/lidar_visual_fusion
 ./start_simulation_sources.sh
 ```
 
-这个脚本统一设置 **ROS_DOMAIN_ID=10**，连接 UE 的 `192.168.10.22:6665`（采集）和 `:6668`（车辆控制）。它会启动缺少的节点、复用配置一致的已有节点，并在远程桌面打开“月球车控制 GUI”。
+自动启动缺少的 capture、车辆桥接和控制 GUI，复用配置一致的已有节点。连接 UE `192.168.10.22`：采集端口 **6665**，控制与反馈端口 **6668**，ROS 域 **10**。
 
-启动脚本不选择驾驶模式、不设置非零速度；由人操作 GUI。界面沿用原 P3 的速度滑条、模式按钮和紧急停车按钮；关闭 GUI 时仍执行原界面的停车逻辑。GUI 左侧地图区需要它自己的 `/map`，融合高程图和点云请看 RViz。
-
-- 新启动了节点时，保持终端 A 打开。日志路径会在终端打印。
-- 若提示旧节点处于**域 0**等配置冲突，请在原启动终端按 **Ctrl+C** 结束提示的旧节点，再运行本脚本；脚本不会擅自停止旧进程。
-- 仅检查节点是否已启动、配置是否一致：`./start_simulation_sources.sh --check`。
-- 新启动 capture 时默认请求上限 2 Hz、额外等待 0 秒；这不保证 UE 能以 2 Hz 完成传输。已有 capture 会被复用，其参数不会被偷偷改写。
-- 已构建的接收端优化版会自动使用，日常命令不变；新机器的构建方法见 [环境说明](SETUP_CN.md)。
-
-### 终端 B：启动自己的建图和 RViz
+### 终端 B：自己的建图＋RViz
 
 ```bash
-ssh yanfa@192.168.100.216
 cd /home/yanfa/P3/lidar_visual_fusion
 ./start_live.sh
 ```
 
-这条命令启动 **实时数据转接、视觉＋LiDAR 建图和 RViz**，持续运行到手动停止。车辆使用原来的人工控制界面或控制程序驾驶。
+自动转接数据到 ROS 域 **57**，启动定位、建图和 P3 组合窗口。等待图像、位姿和地图出现后，使用终端 A 打开的 GUI 人工驾驶。两个启动脚本都不会主动发出行驶目标或非零速度。
 
-- 建图节点不发布速度或模式切换指令；可视化中的“设置目标”仅在人工操作后向 P4 发送导航目标。
-- 实时源域为 10，建图域为 57；数据转接自动启动。
-- 激光独立转接，视觉缺帧不会阻塞激光输入。
-- 结果保存在 `results/live_mapping_日期_时间_编号/`。
-- 默认不录制原始数据。如需留包，使用 `./start_live.sh --record-input`，注意磁盘空间。
-- 旧命令 `./test_live_simulation.sh` 也已改为同一人工驾驶入口，不再自动行驶。
+需要记录本次输入时，启动命令改为：
 
-结束时：**先由人停车，再在终端 B 按 Ctrl+C**，等待保存地图并关闭建图、RViz。终端 A 的采集和车辆控制继续运行；需要关闭它们时，再在终端 A 按 Ctrl+C，只有本次新启动的节点会关闭。
+```bash
+./start_live.sh --record-input
+```
 
-### 接入 P4：在栅格上选点导航
+需要接口检查时，可加 `--verify --verify-seconds 60`。默认不记录这两类额外数据。
 
-P3 已开始发布定位和地图后，在第三个终端执行：
+## 3. 接入 P4：在栅格上选点导航
+
+车辆停稳，P3 已有定位和地图后，在终端 C 执行：
 
 ```bash
 bash /home/yanfa/P4/scripts/navigation.sh start
 ```
 
-等待 P4 提示就绪，然后在 **P3 组合窗口右侧栅格** 操作：
+等待提示 `Navigation ready`，在 **P3 组合窗口右侧栅格** 操作：
 
 1. 点 **设置目标**。
-2. 在已观测的可通行栅格按下鼠标，拖动箭头设定朝向，松开后交给 P4 规划和行驶。Esc 取消。
-3. 绿色是全局规划路线，紫色是局部路径，橙色是已行驶轨迹。黑色是已识别障碍；未知、障碍或地图外的目标会被拒绝。
-4. 默认跟车 **32×32 米**；点 **全图** 查看完整累计地图，点 **跟车32m** 恢复。普通拖动和滚轮只调整视角。
+2. 在已观测、可通行的位置按下鼠标，拖动指定车头朝向，松开发送；Esc 取消。
+3. P4 规划成功后车辆开始执行。绿色是全局路线，紫色是局部路径，橙色是已行驶轨迹。
+4. 黑色为障碍，深灰为未知。默认跟车显示 **32×32 米**；点 **全图** 看累计地图，点 **跟车 32 m** 恢复跟随。
 
-启动不自动下发目标，也不启动自主探索；P4 未连接时不会排队保存目标以待重连后执行。“已发送”仅表示目标已交给 P4，不表示规划成功。目标点是否满足车辆尺寸及路径约束由 P4 再检查。
+“已发送”只表示目标交给 P4，是否可达、车辆是否能通过还由 P4 检查。未知或障碍区域不能选作目标。启动命令不会创建自主探索任务。
 
-**P3 重启会重置本次定位原点，需重新对齐 P4。** 更新版本时，先由操作人员确认车辆停稳，再执行 `bash /home/yanfa/P4/scripts/navigation.sh stop`，保存并停止旧 P3，重新运行 `./start_live.sh`，最后运行 P4 的 `navigation.sh start`。已经打开的旧窗口不会自动加载新代码，更新后需按此顺序重启。
+**当前 P4 仿真控制使用 `/P4/input/odometry` 的 UE 对齐反馈。** P3 独立估计位姿通过 `/Car/T3/localization/odometry` 发布，UE 绝对位置不参与本建图算法估计。P4 能走到目标，不能单独证明 P3 定位精度达标。
 
-LiDAR 配准失败时，合格视觉可以继续发布位姿，并用仍有效的点云建图；候选子图失败不会停止视觉。查看 `/fusion/status` 的 `output_source: visual` 和 `localization_valid: true`。若正式定位也不再更新，先停车；不要继续下发目标。见 [视觉接续与恢复说明](visual_recovery_20260916.md)。
+### 停车与结束
 
-## 4. 查看状态、保存和停止
-
-bag 回放运行期间：
+先在车辆控制 GUI 停车。使用过 P4 时先结束 P4：
 
 ```bash
-./status.sh
-./save_map.sh
-./stop.sh
+bash /home/yanfa/P4/scripts/navigation.sh stop
 ```
 
-停止后导出地图，将下面的 `results/你的结果目录` 换成终端显示的本次目录：
+然后在终端 B 按 **Ctrl+C**，等待保存并关闭本次建图、RViz。终端 A 可继续保留；需要结束采集和控制时，再按 Ctrl+C。它只关闭自己新启动的节点，已复用的进程仍由原启动入口管理。
+
+**重启 P3 的顺序：停车 → 停 P4 → 保存并停 P3 → 启动 P3 → 启动 P4。** P3 重启会重置本次原点，P4 需要重新对齐。旧窗口不会自动加载新代码。
+
+## 4. 历史 bag 建图
+
+先确认实时建图已停止，再任选一条：
 
 ```bash
-./export_map.sh results/你的结果目录
+./start_short_bag.sh fusion   # short，视觉＋LiDAR
+./start_short_bag.sh lidar    # short，仅 LiDAR
+./start_long_bag.sh           # 20260824_235238 的前约 10 分钟
 ```
 
-人工驾驶实时建图按 Ctrl+C 结束后已经自动保存、停止本次建图，直接执行导出即可。
+启动后自动显示高程和点云。切换任务前使用 `./stop.sh`。历史回放时不要启用车辆选点导航。
+
+## 5. 状态、地图保存在哪里
+
+```bash
+./status.sh       # 当前运行目录和进程
+./save_map.sh     # 运行中保存检查点
+./stop.sh         # 停止自己的建图；不是车辆停车命令
+```
+
+最近一次运行可从 **`results/latest/`** 打开，真实路径以 `./status.sh` 和 `run_state.json` 为准。启动新会话会更新这个快捷入口。
+
+本次建图完全停止后导出：
+
+```bash
+./export_map.sh results/latest
+```
+
+导出旧会话时改用其实际目录，避免 `latest` 已指向新任务。
 
 | 文件 | 内容 |
 |---|---|
-| `lidar_map.pcd` | 导出的 LiDAR 点云地图 |
-| `global_grid_map.npz` | 导出的全局高程栅格；地图过大时使用分块存储 |
-| `global_grid_map.sqlite3` | 持久化栅格地图 |
+| `lidar_map.pcd` | 停止后导出的完整点云 |
+| `global_grid_map.sqlite3` | 持久化高程栅格 |
+| `global_grid_map.npz` | 容量允许时的全局矩阵；大图保留分块形式 |
 | `trajectory_map.tum` | 估计轨迹 |
-| `verification.json` | 位姿、TF、地图发布等接口检查 |
-| `live_session_status.json` | 实时接收、转发数量和建图状态 |
-| `resources_latest.json` | 当前内存、磁盘等资源统计 |
+| `fusion_status.json` | 当前视觉、LiDAR、融合状态 |
+| `map_statistics.json` | 入图数量、地图版本、丢帧和存储状态 |
+| `resources_latest.json` | 内存和磁盘情况 |
+| `verification.json` | 加 `--verify` 后生成的接口检查结果 |
 
-`verification.json` 需要启动时加 `--verify`；普通运行不收集完整验证记录，减少额外占用。
+旧结果归档到 `results/history/日期/`；原路径与新路径在 `results/organization/`。本次整理仅限融合项目，**移动归档、不删除数据**。详见 [目录说明](DIRECTORY_CN.md)。
 
-## 5. 给规划端的接口
+## 6. 常用话题与节点
 
-**ROS_DOMAIN_ID：57；地图坐标系：`map`；距离单位：米。**
-
-| 话题 | 内容／类型 |
-|---|---|
-| `/T3/semantic/current_pose` | 当前位姿，`nav_msgs/msg/Odometry` |
-| `/T3/semantic/trajectory` | 轨迹，`nav_msgs/msg/Path` |
-| `/T3/semantic/incremental_map` | 增量地图，`t3_interfaces/msg/IncrementalSemanticMap` |
-| `/T3/mapping/elevation_map` | 高程图，`grid_map_msgs/msg/GridMap` |
-| `/T3/mapping/lidar_map` | 点云图，`sensor_msgs/msg/PointCloud2` |
-| `/Car/T3/mapping/grid_map` | 跟随车辆的局部栅格，`grid_map_msgs/msg/GridMap`，`odom` 坐标系 |
-| `/Car/T3/mapping/global_grid_map` | RViz 使用的累计全局高程栅格，`grid_map_msgs/msg/GridMap`，`map` 坐标系 |
-| `/Car/T4/rviz_goal` | 人工选取的目标，`geometry_msgs/msg/PoseStamped`，`map` 坐标系 |
-| `/Car/T4/planning/global_route` | 全局规划路线，`nav_msgs/msg/Path` |
-| `/Car/T4/planning/local_path` | 局部规划路径，`nav_msgs/msg/Path` |
-
-全局栅格包含高程、方差、高度差、可通行性、占用和障碍六层；右侧障碍着色与地图中的障碍判定一致。P3 的 `map → odom` 为单位变换。
-
-跨机器联调时，bag 启动命令末尾加 `--network`；规划端设置 `ROS_DOMAIN_ID=57`、`ROS_LOCALHOST_ONLY=0`。两端需能互通，并安装对应消息包。实时建图已启用网络发现。
-
-### 采集与控制话题：ROS_DOMAIN_ID=10
+建图和 P4 使用 **ROS_DOMAIN_ID=57**、`ROS_LOCALHOST_ONLY=0`。长度为米；`map → odom` 为单位变换，车体为 `base_link`。
 
 | 话题 | 内容／类型 |
 |---|---|
-| `/Car/T5/Cam_Left/image_raw/color` | 左图，`sensor_msgs/msg/Image` |
-| `/Car/T5/Cam_Right/image_raw/color` | 右图，`sensor_msgs/msg/Image` |
-| `/Car/T5/OS1/points` | 原始点云，`sensor_msgs/msg/PointCloud2` |
-| `/Car/T5/TOF_Left/image_raw/depth`、`/Car/T5/TOF_Right/image_raw/depth` | 原始 ToF 深度，`sensor_msgs/msg/Image`；深度单位尚未确认，暂不入图 |
-| `/car/odom` | 仿真车辆遥测位姿，`nav_msgs/msg/Odometry`；不是本算法估计结果 |
-| `/car/cmd_vel` | 人工／外部控制程序的速度指令入口，`geometry_msgs/msg/Twist` |
+| `/Car/T3/localization/odometry`、`/T3/semantic/current_pose` | 正式位姿，`nav_msgs/msg/Odometry`，`odom` 系 |
+| `/T3/semantic/trajectory` | 已行驶轨迹，`nav_msgs/msg/Path` |
+| `/Car/T3/mapping/grid_map` | 规划用局部 **64×64 米**栅格，`grid_map_msgs/msg/GridMap` |
+| `/T3/mapping/global_grid_map`、`/Car/T3/mapping/global_grid_map` | 累计全局高程与障碍层，`grid_map_msgs/msg/GridMap` |
+| `/T3/mapping/lidar_map` | 有界点云预览，`sensor_msgs/msg/PointCloud2` |
+| `/T3/semantic/incremental_map` | 当前滑动窗口，`t3_interfaces/msg/IncrementalSemanticMap` |
+| `/Car/T4/rviz_goal` | 选点目标，`geometry_msgs/msg/PoseStamped` |
+| `/Car/T4/planning/global_route`、`/Car/T4/planning/local_path` | P4 规划路线，`nav_msgs/msg/Path` |
+| `/fusion/status` | 定位健康状态，`std_msgs/msg/String`，JSON 内容 |
 
-### 主要节点
+主要节点：`fusion_voxelmap`（LiDAR）、`fusion_learned_odometry`（视觉）、`ekf_filter_node`＋`fusion_odometry_guard`（融合与正式输出）、`fusion_terrain_mapper`（建图）、`t3_visual_monitor`＋`t3_rviz`（显示）。
 
-| ROS 域 | 节点名称 | 作用 |
-|---|---|---|
-| 10 | `/sensor_capture_node` | 采集 UE 传感器 |
-| 10 | `/lunar_car_node` | 车辆控制与遥测 |
-| 10 | `/lunar_car_gui_node` | 人工控制窗口 |
-| 10 → 57 | `/fusion_live_sensor_source`、`/fusion_live_sensor_transfer` | 仅转接传感器数据 |
-| 57 | `/fusion_sensor_adapter` | 输入适配 |
-| 57 | `/fusion_voxelmap` | LiDAR 里程计 |
-| 57 | `/fusion_learned_odometry` | 视觉里程计 |
-| 57 | `/ekf_filter_node`、`/fusion_odometry_guard` | 融合、检查并发布正式位姿 |
-| 57 | `/fusion_terrain_mapper` | 高程、点云和增量地图 |
-| 57 | `/t3_visual_monitor`、`/t3_rviz` | P3 可视化 |
-
-在另一个 SSH 终端查看建图话题、节点：
+查看话题、节点和健康状态：
 
 ```bash
-cd /home/yanfa/P3/lidar_visual_fusion
 source scripts/env.sh
 export ROS_DOMAIN_ID=57 ROS_LOCALHOST_ONLY=0
-ros2 topic list
 ros2 node list
+ros2 topic list
+ros2 topic echo --once /fusion/status
 ```
 
-查看采集和车辆控制时，将 `ROS_DOMAIN_ID` 改为 `10`。规划定位使用域 57 的 `/T3/semantic/current_pose`。
+采集和控制在域 **10**：左右图 `/Car/T5/Cam_Left/image_raw/color`、`/Car/T5/Cam_Right/image_raw/color`，点云 `/Car/T5/OS1/points`，车辆反馈 `/car/odom`、`/car/telemetry`。完整协议见 [接口与资源约定](接口与资源约定.md)。
 
-## 6. 地图更新频率
+## 7. 当前默认效果与限制
 
-- 入图跟随有效 LiDAR 帧，使用相同时间戳的融合位姿；图像用于改善位姿。当前入图前等待 1.6 秒，让视觉修正进入融合。
-- 高程、点云和增量地图每 2 秒检查发布，有新内容才发送，最高约 0.5 Hz。
-- RViz 使用沿途累计的全局地图，独立定时器每 2 秒触发发布；右侧默认仅显示车周围 32×32 米，左侧保留全局点云。压缩落盘异步执行。定时器可能因同进程建图耗时发生抖动，不承诺硬实时。
-- 规划端仍使用跟随车辆的局部 64×64 米栅格。未观测区域保持未知。
-- 当前 capture 请求上限为 2 Hz；2026-09-16 驻车场景实测，接收端优化后由平均 1.83 秒降到 1.36 秒一批（约 0.74 Hz），仍未达到 2 Hz。缩短地图发布周期不能补出尚未采到的观测。
-- LiDAR 定位退化、点云仍有效时，可由合格视觉接续定位；点云完全断流时暂停几何地图新增，目前没有纯双目深度后备建图。
-- 实时模式已启用视觉初值和候选子图恢复；候选未确认或中途放弃时，合格视觉照常输出。恢复不清空累计地图，也不重置 P4 使用的原点。视觉失效时由合格 LiDAR 接续。
-- 新障碍随有效点云入图。旧障碍至少需要 3 次合格 LiDAR 观测确认原位置为空才移除；遮挡、没有扫到或定位不可靠时不清除。全局点云、局部和全局栅格同步重建受影响位置。详见 [地图更新与显示验证](map_visual_20260916.md)。
+- **地图更新**：有效 LiDAR 帧＋同时间戳位姿入图，等待视觉修正约 1.6 秒；局部／全局地图目标周期均为 **2 秒**，实际可能延迟。右侧 32 米是显示窗口，发给 P4 的局部栅格仍是 64 米。
+- **采集频率**：请求上限 2 Hz；之前同一驻车场景实测约 **0.74 Hz**，不是稳定 2 Hz。发布频率调高不能生成新的传感器观测。
+- **点云参数**：VoxelMap 根体素 **2 米**，输入降采样 **0.2 米**，迭代上限 **20 次**；左侧显示采样 **0.25 米、最多 10 万点**。这些参数作用不同。
+- **互相接续**：LiDAR 失配时，质量合格、坐标连续的视觉可独立输出；视觉失效时使用合格 LiDAR。持续失配会尝试候选子图；候选失败不打断合格视觉。两路都失效时停止可信定位输出。
+- **点云断流**：暂停几何地图新增，目前没有纯双目深度后备建图。未扫描区域保持未知。
+- **障碍更新**：新增障碍随点云加入；清除旧障碍需要至少 3 次合格新观测，定位不可靠或未重新扫描时保留。
+- **IMU／ToF**：标准 IMU 接口保留；仿真速度尚未完成一致性核验，默认不融合。ToF 深度单位与外参投影尚未核对一致，暂不补图。详见 [可选 IMU](optional_imu.md)、[速度反馈](velocity_feedback.md)。
+- **本轮验收**：运动测试因机器正在被其他人使用而暂停；首段仅发生转向，未完成有效行驶轨迹，不提供本次 ATE。已有 bag 成绩和接口检查不能代替在线精度验收。
 
-## 7. ToF 与 IMU 当前状态
+## 8. 常见情况
 
-- ToF 外参在原 P3 的 `workspace/src/t3_semantic_mapping/config/pointcloud_extrinsic.yaml`：`tof_left` 对应 TOF5，`tof_right` 对应 TOF4。它们来自 `config/车体前右下-标定数据20260817(1).xlsx`，已转换为米和 ROS 车体系。
-- 两路深度已收到，但按现有 capture 的 `0.01 米/单位` 转换后，地面比 LiDAR 低约 2.5 米。仿真深度编码尚未确认，因此暂未启用 ToF 补图。
-- UE 的 `meta.json` 有姿态、速度和角速度字段；当前捕获的文件没有加速度字段。检查时 `/imu/data` 没有发布者。附近端口未找到新服务不代表仿真一定没有 IMU。
-- 实时配置已增加图像辅助静止检测：两路图像特征位移、可靠视觉运动和点云变化连续 3 帧一致，才把该帧视觉运动约束替换为零速度。证据异常、变化或过期立即解除；可在 `/fusion/status` 的 `stationary` 字段查看。它不是任意场景下绝对可靠的停车判定。
+| 情况 | 处理 |
+|---|---|
+| 提示已有任务运行 | 先 `./status.sh` 核对；其他人正在用时先协调，不要直接停任务 |
+| 控制窗口没打开 | `./start_simulation_sources.sh --check` 检查；确认查看的是远程桌面，缺少节点时运行启动脚本 |
+| 显示“视觉接续定位” | 视觉正在接替 LiDAR；查看 `/fusion/status` 的 `output_source` 和 `localization_valid` |
+| 定位失效、地图长时间不更新 | 停车，检查数据源和 `fusion_status.json`、`map_statistics.json` |
+| 目标发出但车辆不走 | 查看 `bash /home/yanfa/P4/scripts/navigation.sh status`；确认目标区域已观测、P4 对齐就绪 |
+| 新按钮或新代码没生效 | 按第 3 节顺序重启；算法源码修改后先 `./build.sh` |
 
-### 6668 车辆反馈（2026-09-16）
-
-- P4 复用 `/car/telemetry`，将车辆模型坐标转换后，由相邻位姿计算速度。它没有在这套桥接中读取到完整 IMU，加速度与远端采样时间戳仍缺失。
-- 已保留独立速度接收与“X 后、Y 下、Z 左”转换接口，接收器只读取 `/car/odom` 的速度，不读取绝对位姿。
-- 当前 `enabled: false`、`fuse_velocity: false`：旧记录与新采样尚未通过方向和尺度一致性核验，因此默认不接入静止辅助或位姿积分。不能把 P4 的真值位姿差分当作 IMU。
-- 可选话题（域 57）：`/fusion/telemetry_twist`、`/fusion/telemetry_status`。未标定速度使用 `vehicle_feedback_unverified` 帧名；实车标准 IMU 接口保留。
-- P3 重启／定位重置后，需重新对齐 P4 反馈输入；后台候选子图恢复保持同一原点，不需要重启 P4。
-
-细节见远程 `docs/velocity_feedback.md` 与 [在线漂移与传输核查](live_drift_and_transport.md)。
-
-## 常见情况
-
-- 提示已有任务运行：先 `./status.sh` 查看，再 `./stop.sh`，然后启动新任务。
-- RViz 没有地图：先确认数据源有输出；日志位置可通过 `./status.sh` 查看。
-- 修改算法代码后：运行 `./build.sh`，编译完成再启动。
-
-日常使用先掌握：**启动 → 看 RViz → 保存 → 停止 → 导出**。
+进一步阅读：[文档索引](INDEX_CN.md) · [新机器环境](SETUP_CN.md) · [目录说明](DIRECTORY_CN.md)。

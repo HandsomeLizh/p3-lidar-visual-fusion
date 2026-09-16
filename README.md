@@ -2,6 +2,8 @@
 
 面向 ROS 2 Humble 的 **VoxelMap＋XFeat/LighterGlue** 融合建图模块。输出位姿、轨迹、高程栅格、LiDAR 点云和增量地图，沿用 P3 的规划接口与 RViz 显示。
 
+**文档入口：[简明使用说明](docs/QUICKSTART_CN.md) · [目录与常用命令](docs/DIRECTORY_CN.md) · [完整文档索引](docs/INDEX_CN.md)。** 最近一次运行通过 `results/latest/` 访问，真实目录和进程以 `run_state.json` 为准。
+
 ## 算法
 
 - LiDAR：VoxelMap 平面及方向协方差、配准质量检查、收敛检查；无 IMU 时失配回到最后可信状态，停止无观测支持的速度外推。逐帧定位，移动 0.1 米或转动 1 度后才向内部配准地图加入新视角。
@@ -41,7 +43,7 @@ cd /home/yanfa/P3/lidar_visual_fusion
 bash /home/yanfa/P4/scripts/navigation.sh start
 ```
 
-等待 P4 就绪，在本组合窗口右侧点 **设置目标**，于已观测的可通行栅格按下并拖动设定朝向，松开发送给 P4 规划和行驶；Esc 取消。启动本身不发送目标。P3 重启后需在车辆停稳时重新启动 P4，使其重新对齐坐标。见 [简明使用说明](docs/QUICKSTART_CN.md#接入-p4在栅格上选点导航)。
+等待 P4 就绪，在本组合窗口右侧点 **设置目标**，于已观测的可通行栅格按下并拖动设定朝向，松开发送给 P4 规划和行驶；Esc 取消。启动本身不发送目标。P3 重启后需在车辆停稳时重新启动 P4，使其重新对齐坐标。见 [简明使用说明](docs/QUICKSTART_CN.md#3-接入-p4在栅格上选点导航)。
 
 结束时先由人停车，再在终端 B 按 Ctrl+C，保存地图并结束建图。终端 A 管理自己启动的采集、控制和 GUI。GUI 保留原 P3 的关闭停车行为。
 
@@ -96,6 +98,6 @@ bash /home/yanfa/P4/scripts/navigation.sh start
 - [多轨迹与图像干扰](docs/fusion_multitrajectory_report.md)：黑屏、过曝、斜强光和低照度扰动；报告对应当时版本。
 - [早期在线测试](docs/live_simulation_report.md)：包含首次在线失败记录，供追查。
 
-最新人工驾驶启动方式已实际打开控制 GUI、运行采集转接和建图，并通过 10 项实时接口检查；**尚未完成修复后的新行驶轨迹精度验收**。历史 bag 成绩与接口连通不能替代这一项。
+最新人工驾驶启动方式已实际打开控制 GUI、运行采集转接和建图，并通过 10 项实时接口检查；**尚未完成修复后的新行驶轨迹精度验收**。本轮短测仅执行了转向并因反馈超时停车，随后用户确认机器正由其他人使用，运动测试暂停；记录见 [目录整理与实时短测](docs/organization_live_20260916.md)。历史 bag 成绩与接口连通不能替代这一项。
 
 仓库保存源码、配置、测试和文字报告；原始 bag、模型权重、运行地图、构建产物与历史备份不进入 Git。第三方来源、版本和许可证见 [THIRD_PARTY.md](THIRD_PARTY.md)。

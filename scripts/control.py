@@ -24,6 +24,22 @@ def save(s):
     t=STATE.with_suffix(".tmp");t.write_text(json.dumps(s,indent=2));t.replace(STATE)
 
 
+def update_latest(output):
+    results=(ROOT/"results").resolve()
+    output=Path(output).resolve()
+    if not output.is_relative_to(results):return
+    latest=results/"latest"
+    if latest.exists() and not latest.is_symlink():
+        print("Preserving existing results/latest directory",flush=True)
+        return
+    temporary=results/f".latest-{os.getpid()}"
+    try:
+        temporary.symlink_to(output.relative_to(results),target_is_directory=True)
+        temporary.replace(latest)
+    finally:
+        if temporary.is_symlink():temporary.unlink()
+
+
 def spawn(s,name,args,env):
     log=Path(s["output"])/f"{name}.log"
     with log.open("ab",buffering=0) as f:
@@ -133,6 +149,7 @@ def main():
     s={"output":str(out),"domain":os.environ.get("ROS_DOMAIN_ID","57"),
        "localhost_only":os.environ.get("ROS_LOCALHOST_ONLY","1"),"processes":{}}
     save(s)
+    update_latest(out)
     env=dict(os.environ)
     env["ROS_LOG_DIR"]=str(out/"ros_logs")
     spawn(s,"pipeline",["ros2","launch",str(ROOT/"scripts/fusion.launch.py"),
