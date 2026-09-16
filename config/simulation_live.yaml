@@ -250,6 +250,12 @@ visual_wall_timeout_sec: 6.0
 image_input_reliability: reliable
 lidar_input_reliability: reliable
 adaptive_source_selection: true
+visual_continuity:
+  enabled: true
+# One qualification boundary for official visual output and LiDAR initial guesses.
+# These do not relax LiDAR residual, convergence, or motion checks.
+qualified_position_variance: 4.0
+qualified_rotation_variance: 0.5
 lidar_recovery_frames: 3
 lidar_max_pose_variance: 100.0
 independent_visual_min_score: 0.45
@@ -259,6 +265,14 @@ voxelmap:
   voxel_size: 2.0
   downsample_size: 0.2
   max_iterations: 20
+  visual_recovery_enabled: true
+  submap_after_failures: 4
+  submap_confirmation_scans: 3
+  visual_seed_tolerance: 0.08
+  visual_seed_wait_sec: 1.0
+  visual_seed_position_variance: 4.0
+  visual_seed_rotation_variance: 0.5
+  submap_retry_cooldown_sec: 5.0
   # Vehicle limits for this live deployment, independent of route/scene.
   # The current controller limit is 0.2 m/s; retain margin for gain and latency.
   tracking_max_speed: 1.0

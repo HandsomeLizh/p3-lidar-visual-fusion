@@ -59,6 +59,8 @@ class Monitor(Node):
         self.path = None
         self.pose_at = 0.
         self.timing = {}
+        self.fusion_health = None
+        self.fusion_health_at = 0.
         self.cloud_status = {}
         self.grid = None
         self.thumbnails = {}
@@ -105,6 +107,7 @@ class Monitor(Node):
         self.create_subscription(GridMap, '/T3/mapping/global_grid_map', self.on_grid, retained)
         self.create_subscription(String, '/T3/mapping/lidar_status', self.on_status, retained)
         self.create_subscription(String, '/Car/T3/metrics/frame_timing', self.on_timing, live)
+        self.create_subscription(String, '/fusion/status', self.on_fusion_health, live)
         for side in ('Left', 'Right'):
             self.create_subscription(Image, f'/Car/T5/Cam_{side}/image_raw/color',
                                      lambda msg, key=side: self.on_image(key, msg), live)
@@ -121,6 +124,18 @@ class Monitor(Node):
     def on_status(self, message):
         with self.lock:
             self.cloud_status = json.loads(message.data)
+
+    def on_fusion_health(self,message):
+        try:
+            value=json.loads(message.data)
+            if not isinstance(value,dict) or not isinstance(value.get('localization_valid'),bool):return
+            with self.lock:
+                self.fusion_health=value;self.fusion_health_at=time.monotonic()
+        except (ValueError,TypeError):return
+
+    def localization_unavailable(self):
+        return (self.fusion_health is not None and
+            (not self.fusion_health.get('localization_valid') or time.monotonic()-self.fusion_health_at>3.))
 
     def on_cloud(self, message):
         original = pointcloud2_xyz_array(message)
@@ -267,6 +282,8 @@ class Monitor(Node):
 
     def request_goal(self,x,y,yaw):
         with self.lock:
+            if self.localization_unavailable():
+                self.goal_status='定位暂不可用，未发送目标';return False
             if not np.isfinite([x,y,yaw]).all() or self.elevation_data is None or self.grid_frame not in ('map','odom'):
                 self.goal_status='地图尚未就绪，未发送目标';return False
             elevation,(ox,oy,res,nx,ny),_=self.elevation_data
@@ -284,6 +301,8 @@ class Monitor(Node):
     def send_requested_goal(self):
         with self.lock:
             goal,self.goal_requested=self.goal_requested,None
+            if goal is not None and self.localization_unavailable():
+                self.goal_status='定位暂不可用，未发送目标';return
         if goal is None:return
         x,y,yaw,z,requested=goal
         if time.monotonic()-requested>1. or self.goal_pub.get_subscription_count()==0:
@@ -528,6 +547,8 @@ class Window:
             cloud, count = dict(self.node.cloud_status), self.node.display_points
             thumbnails = dict(self.node.thumbnails)
             goal_status=self.node.goal_status
+            unavailable=self.node.localization_unavailable()
+            output_source=(self.node.fusion_health or {}).get('output_source')
         self.goal_label.config(text=('选点模式：松开鼠标将交给 P4 规划并行驶；Esc 取消' if self.goal_mode else goal_status))
         age = time.monotonic() - pose_at if pose_at else None
         outcome = timing.get('outcome', '')
@@ -543,6 +564,10 @@ class Window:
             except (OSError, ValueError):
                 pass
         label, color = localization_status(age, outcome, bool(path), phase)
+        if phase is None and unavailable:
+            label,color='定位暂不可用 · 正在恢复','#ffb366'
+        elif phase is None and output_source=='visual' and age is not None:
+            label,color=f'视觉接续定位 · 最近更新 {age:.1f} 秒前','#53e0e5'
         self.status.config(text=label, fg=color)
         if path and path.poses:
             last = path.poses[-1].pose
