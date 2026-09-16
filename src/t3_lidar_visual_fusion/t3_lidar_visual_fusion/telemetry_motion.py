@@ -42,14 +42,26 @@ class VelocityGate:
             # declares all six wire fields already use RH X-forward/Y-left/Z-up.
             # This is decoding, not a physical mounting rotation.
             'legacy_driver_from_flu_wire': [1., -1., 1., -1., 1., -1.],
+            # The legacy decoder already handles LH polar/axial vector signs.
+            # Its decoded Actor child axes still need the proper rotation C
+            # below. Do not undo the decoder signs for this encoding.
+            'legacy_driver_from_actor_body_wire': [1., 1., 1., 1., 1., 1.],
         }
         if self.input_encoding not in input_signs:
             raise ValueError('Unknown telemetry input_encoding')
         self.input_signs = np.asarray(input_signs[self.input_encoding])
+        self.input_rotation = np.eye(3)
+        if self.input_encoding == 'legacy_driver_from_actor_body_wire':
+            # Raw Actor axes: X back, Y down, Z left (LH).
+            # Raw -> ROS: v=(-vx,vz,-vy), w=(wx,-wz,wy).
+            # On legacy-decoded /car/odom both use C, a proper rotation.
+            self.input_rotation = np.array([[-1.,0.,0.],[0.,0.,1.],[0.,1.,0.]])
         self.rotation = np.asarray(cfg.get('base_from_feedback_rotation', np.eye(3)), dtype=float)
         self.velocity_frame = cfg.get('velocity_frame', 'body')
         if self.velocity_frame not in ('body', 'world'):
             raise ValueError('velocity_frame must be body or world')
+        if self.input_encoding == 'legacy_driver_from_actor_body_wire' and self.velocity_frame != 'body':
+            raise ValueError('Actor body encoding cannot be used for world-frame velocities')
         self.world_rotation = np.asarray(cfg.get('world_from_feedback_rotation', np.eye(3)), dtype=float)
         self.orientation_child_from_base = np.asarray(cfg.get('orientation_child_from_base_rotation', np.eye(3)), dtype=float)
         values = [self.max_age, self.future, self.max_speed, self.max_angular, self.linear_scale, self.angular_scale]
@@ -74,7 +86,7 @@ class VelocityGate:
     def accept(self, stamp, frame, velocity, now, world_from_body=None):
         self.counts['received'] += 1
         velocity = np.asarray(velocity, dtype=float)
-        rotation = self.rotation
+        rotation = self.rotation @ self.input_rotation
         if self.velocity_frame == 'world':
             if not self.proper_rotation(world_from_body):
                 self.reason='missing_or_invalid_world_attitude'

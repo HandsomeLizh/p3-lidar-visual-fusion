@@ -179,6 +179,25 @@ class DiskElevationMap(TiledSemanticMapManager):
             np.add.at(tile.semantic_votes, (labels[use], local[:, 1], local[:, 0]), 1)
             tile._fusion_revision = self.update_id
 
+    def rebuild_cells(self, cells, cloud):
+        """Replace only columns whose old voxels were confirmed free by rays."""
+        cells=np.unique(np.asarray(cells,dtype=np.int64).reshape(-1,2),axis=0)
+        if not len(cells):return
+        self.update_id+=1
+        for cell in cells:
+            pair=np.floor_divide(cell,self.tile_cells)
+            tile=self.tiles.get(tuple(pair),writable=True)
+            if tile is None:continue
+            col,row=cell-pair*self.tile_cells
+            for name,_ in FIELDS:
+                values=getattr(tile,name)
+                fill=np.inf if name=='elevation_min' else -np.inf if name=='elevation_max' else 0
+                if name=='semantic_votes':values[:,row,col]=fill
+                else:values[row,col]=fill
+            for points in cloud.column_points(cell,self.resolution):
+                tile._update_elevation_cell(row,col,points[:,2])
+            tile._fusion_revision=self.update_id
+
     def window_geometry(self, **kwargs):
         values = np.asarray([kwargs[k] for k in ("center_x", "center_y", "length_x", "length_y")])
         if not np.isfinite(values).all() or np.any(values[2:] <= 0) or np.any(np.abs(values[:2]) > 1e7):

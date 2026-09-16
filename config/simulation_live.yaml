@@ -154,7 +154,19 @@ global_max_cells: 1000000
 global_publish_period: 2.0
 overview_side_cells: 256
 overview_resolution: 1.0
-preview_voxel_size: 0.3
+preview_voxel_size: 0.25
+obstacle_threshold: 65
+dynamic_map:
+  enabled: true
+  confirmations: 3
+  max_gap_sec: 8.0
+  ray_radius_m: 0.04
+  range_margin_m: 0.25
+  max_range_m: 40.0
+  max_candidates: 40000
+  max_changed_cells: 256
+  max_position_variance: 0.01
+  max_rotation_variance: 0.0025
 pose_buffer_samples: 1200
 map_pending_scans: 4
 stereo_queue_depth: 2
@@ -281,8 +293,9 @@ telemetry_motion:
   fuse_velocity: false
   calibration_confirmed: false
   input_encoding: legacy_driver_from_flu_wire
-  wire_frame: world
-  wire_frame_confirmed: true
+  # Candidate frame only: raw velocity coordinates have NOT passed validation.
+  wire_frame: unverified
+  wire_frame_confirmed: false
   velocity_frame: world
   world_frame_alignment_confirmed: false
   world_from_feedback_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]

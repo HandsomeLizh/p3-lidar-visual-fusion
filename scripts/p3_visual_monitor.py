@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 P3 = Path("/home/yanfa/P3/roma_t3_algorithm_bundle_20260825")
 sys.path.insert(0, str(P3 / "integration_demo"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "visual"))
 import visual_monitor
 
 def timing(self, message):
@@ -21,7 +22,11 @@ def subscription(self, message_type, topic, callback, qos, *args, **kwargs):
     if topic == "/T3/mapping/lidar_status":
         from rclpy.qos import QoSProfile, ReliabilityPolicy
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
-    return original_subscription(self, message_type, topic, callback, qos, *args, **kwargs)
+    def guarded(message):
+        try:callback(message)
+        except (ValueError,IndexError,KeyError,TypeError,OverflowError) as error:
+            self.get_logger().warning('Display input rejected on '+topic+': '+str(error),throttle_duration_sec=5.)
+    return original_subscription(self, message_type, topic, guarded, qos, *args, **kwargs)
 visual_monitor.Monitor.create_subscription = subscription
 
 def cloud_status(self, message):

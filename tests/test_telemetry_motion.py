@@ -87,6 +87,35 @@ class VelocityInputTests(unittest.TestCase):
     def test_unknown_input_encoding_is_rejected(self):
         with self.assertRaises(ValueError):VelocityGate({'input_encoding':'unrecognized'})
 
+    def test_actor_body_polar_and_axial_fields_after_legacy_decoder(self):
+        gate=VelocityGate({'input_encoding':'legacy_driver_from_actor_body_wire',
+            'angular_scale':np.pi/180,'standard_deviation':[.1,.2,.3,.01,.02,.03]})
+        # Raw Actor v=(-.2,-.03,.04), w=(10,20,30). The C++ decoder
+        # flips linear Y and angular X/Z before publishing these fields.
+        self.assertTrue(gate.accept(10.,'base_link',[-.2,.03,.04,-10.,20.,-30.],10.))
+        _,v,cov=gate.take(10.)
+        np.testing.assert_allclose(v,np.r_[.2,.04,.03,np.deg2rad([10.,-30.,20.])])
+        np.testing.assert_allclose(np.diag(cov),np.array([.1,.3,.2,.01,.03,.02])**2)
+
+    def test_actor_body_forward_left_and_right_turns_ignore_pose(self):
+        class Message:
+            child_frame_id='base_link'
+            @property
+            def pose(self):raise AssertionError('Body feedback must not use UE pose')
+        for turn in (-6.,6.):
+            gate=VelocityGate({'input_encoding':'legacy_driver_from_actor_body_wire','angular_scale':np.pi/180})
+            msg=Message();msg.header=SimpleNamespace(stamp=SimpleNamespace(sec=10,nanosec=0))
+            msg.twist=SimpleNamespace(twist=SimpleNamespace(
+                linear=SimpleNamespace(x=-.2,y=0.,z=0.),angular=SimpleNamespace(x=0.,y=turn,z=0.)))
+            node=SimpleNamespace(gate=gate,get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=10_000_000_000)))
+            TelemetryMotion.receive(node,msg)
+            _,v,_=gate.take(10.)
+            np.testing.assert_allclose(v,[.2,0.,0.,0.,0.,np.deg2rad(turn)])
+
+    def test_actor_body_encoding_rejects_world_mode(self):
+        with self.assertRaises(ValueError):
+            VelocityGate({'input_encoding':'legacy_driver_from_actor_body_wire','velocity_frame':'world'})
+
     def test_world_velocity_uses_current_attitude_and_rotates_uncertainty(self):
         r=np.array([[0.,-1.,0.],[1.,0.,0.],[0.,0.,1.]])
         gate=VelocityGate({'velocity_frame':'world','standard_deviation':[.1,.2,.3,.01,.02,.03]})

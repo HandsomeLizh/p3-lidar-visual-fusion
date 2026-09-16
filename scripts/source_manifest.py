@@ -15,7 +15,7 @@ def sha256(path):
 def fingerprint():
     digest=hashlib.sha256()
     for folder in ["src/t3_lidar_visual_fusion","src/t3_voxelmap","src/t3_pv_lio","src/grid_map_msgs","src/t3_interfaces",
-                   "vendor/VINS-Fusion","vendor/XFeat","vendor/LightGlue"]:
+                   "vendor/VINS-Fusion","vendor/XFeat","vendor/LightGlue","visual"]:
         for p in sorted((ROOT/folder).rglob("*")):
             if not p.is_file() or any(s in p.parts for s in [".git","__pycache__","build","install"]):
                 continue

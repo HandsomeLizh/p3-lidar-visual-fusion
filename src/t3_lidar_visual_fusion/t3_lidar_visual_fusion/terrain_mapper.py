@@ -22,6 +22,7 @@ from .core import PoseBuffer,rigid,inverse
 from .ros_utils import stamp_sec,transform_from_pose,cloud_arrays,xyz_cloud,typed
 from .disk_map import DiskElevationMap
 from .bounded_cloud import BoundedCloudStore
+from .visibility_cleanup import VisibilityCleanup
 from .overview import Overview
 from .resources import memory_sample
 from .compact_delivery import CompactDelivery
@@ -44,6 +45,8 @@ class TerrainMapper(Node):
             cache_mib=self.cfg.get("tile_cache_mib",128),max_window_cells=self.cfg.get("max_query_cells",250000))
         self.cloud=BoundedCloudStore(self.internal/"lidar_voxels.sqlite",self.cfg["cloud_voxel_size"],
             self.cfg["cloud_preview_points"],self.cfg.get("preview_voxel_size",.3))
+        self.cleanup=VisibilityCleanup(self.cfg.get('dynamic_map',{}))
+        self.pose_quality=deque(maxlen=self.cfg.get('pose_buffer_samples',1200))
         self.delivery=CompactDelivery(self.output/"global_grid_map.sqlite3")
         self.overview=Overview(self.cfg.get("overview_side_cells",256),self.cfg.get("overview_resolution",1.))
         self.dense_writer=LiveDenseGlobalMapWriter(self.output/"global_grid_map.npz",frame_id="map")
@@ -94,6 +97,9 @@ class TerrainMapper(Node):
             appended=self.poses.append(stamp_sec(msg),t)
             revised=not appended and self.poses.replace_latest(stamp_sec(msg),t)
             if appended or revised:
+                covariance=np.asarray(msg.pose.covariance).reshape(6,6)
+                self.pose_quality.append((stamp_sec(msg),float(np.max(np.diag(covariance)[:3])),
+                                          float(np.max(np.diag(covariance)[3:]))))
                 self.last_pose=t
                 if appended:
                     self.tum_last_offset=self.tum.tell()
@@ -192,7 +198,29 @@ class TerrainMapper(Node):
                     if sample is None:raise ValueError("Missing pose during LiDAR scan")
                     points[use]=base[use]@sample[:3,:3].T+sample[:3,3]
             if name=="lidar":
+                removed=np.empty((0,3))
+                dynamic=self.cfg.get('dynamic_map',{})
+                quality=min(self.pose_quality,key=lambda q:abs(q[0]-stamp)) if self.pose_quality else None
+                clear_ok=(quality is not None and abs(quality[0]-stamp)<=self.cfg['pose_tolerance']
+                    and 0<=quality[1]<=dynamic.get('max_position_variance',.01)
+                    and 0<=quality[2]<=dynamic.get('max_rotation_variance',.0025))
+                # A single rigid scan and LiDAR-only evidence are required for
+                # this clearance path. Calibrated multi-source maps need their
+                # own retained source evidence before replacing height columns.
+                if (dynamic.get('enabled',False) and clear_ok and not self.cfg.get('tof_sources')
+                        and self.cfg.get('instantaneous_cloud',False)):
+                    removed=self.cleanup.update(self.cloud,xyz,pose@t_base_sensor,stamp,self.cfg['map_resolution'])
+                else:
+                    # An uncertain pose breaks clearance confirmation; later
+                    # good scans must establish fresh free-space evidence.
+                    self.cleanup.votes.clear()
+                    self.cleanup.stats=dict(checked=0,free_evidence=0,removed=0,pending=0)
                 self.cloud.append(points);self.stats["lidar_scans"]+=1
+                if len(removed):
+                    self.grid.rebuild_cells(np.floor(removed[:,:2]/self.cfg['map_resolution']).astype(int),self.cloud)
+                    self.refresh_overview(removed)
+                self.stats['cleanup']=dict(self.cleanup.stats,pose_qualified=clear_ok,
+                    removed_total=self.stats.get('cleanup',{}).get('removed_total',0)+len(removed))
             else:self.stats["tof_scans"]+=1
             # Bound scan-density bias while retaining min/median/max height
             # evidence for each XY cell. The existing robust map rejects outliers.
@@ -235,13 +263,28 @@ class TerrainMapper(Node):
         # Height spread detects multiple surfaces/vertical obstacles in one XY cell.
         cost=np.fmax(slope/np.deg2rad(self.cfg.get("max_slope_deg",35.)),
                      np.fmax(step,m.height_range)/self.cfg.get("max_step_m",.3))
-        known=np.isfinite(elevation)&np.isfinite(slope)&np.isfinite(step)
+        hard_obstacle=np.isfinite(elevation)&((m.height_range>=self.cfg.get('max_step_m',.3))|
+            (step>=self.cfg.get('max_step_m',.3))|(slope>=np.deg2rad(self.cfg.get('max_slope_deg',35.))))
+        known=(np.isfinite(elevation)&np.isfinite(slope)&np.isfinite(step))|hard_obstacle
         traversability=np.where(known,np.clip(1-cost,0,1),np.nan).astype(np.float32)
         occupancy=np.full(elevation.shape,-1,np.int8)
         occupancy[known]=np.rint((1-traversability[known])*100).astype(np.int8)
         layers.update(slope=slope.astype(np.float32),step=step,traversability=traversability,
-                      occupancy=np.where(known,occupancy.astype(np.float32)/100.,np.nan))
+                      occupancy=np.where(known,occupancy.astype(np.float32)/100.,np.nan),
+                      obstacle=np.where(known,(occupancy>=self.cfg.get('obstacle_threshold',65)).astype(np.float32),np.nan))
         return layers,occupancy
+
+    def refresh_overview(self, removed):
+        if not self.overview.ready:return
+        cells=np.unique(self.overview._indices(removed[:,:2]),axis=0)
+        for col,row in cells:
+            if not (0<=row<self.overview.size and 0<=col<self.overview.size):continue
+            self.overview.minimum[row,col]=np.inf;self.overview.maximum[row,col]=-np.inf;self.overview.count[row,col]=0
+            absolute=np.rint(self.overview.origin/self.overview.resolution).astype(int)+[col,row]
+            for points in self.cloud.column_points(absolute,self.overview.resolution):
+                self.overview.minimum[row,col]=min(self.overview.minimum[row,col],float(points[:,2].min()))
+                self.overview.maximum[row,col]=max(self.overview.maximum[row,col],float(points[:,2].max()))
+                self.overview.count[row,col]+=len(points)
 
     def occupancy_message(self,geometry,data):
         msg=OccupancyGrid();msg.header=copy.deepcopy(self.last_header)
@@ -302,7 +345,9 @@ class TerrainMapper(Node):
             if m is None:return
             # Keep the original full-extent, original-resolution global contract.
             # Publish the contract's core layers, not visualization color copies.
-            layers=m.layers(["elevation"])
+            all_layers,_=self.terrain_layers(m)
+            layers={key:all_layers[key] for key in ['elevation','elevation_variance','height_range',
+                                                    'traversability','occupancy','obstacle']}
             grid_msg=make_grid_map_message(header=self.last_header,geometry=m.geometry,layers=layers)
             for pub in self.global_pubs:pub.publish(grid_msg)
             self.cached_global=grid_msg;self.last_global_revision=self.grid.update_id

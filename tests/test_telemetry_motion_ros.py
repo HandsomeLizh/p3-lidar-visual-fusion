@@ -33,9 +33,13 @@ class TelemetryRosTests(unittest.TestCase):
     def test_world_velocity_rotated_by_same_packet_attitude(self):
         self.run_case(True)
 
-    def run_case(self, world):
+    def test_actor_body_velocity_after_legacy_receiver(self):
+        self.run_case(False,actor=True)
+
+    def run_case(self, world, actor=False):
         self.assertEqual(os.environ['ROS_DOMAIN_ID'],'61')
         out=ROOT/('results/velocity_input_20260916/world_ros_transport' if world else 'results/velocity_input_20260916/ros_transport')
+        if actor:out=ROOT/'results/velocity_input_20260916/actor_ros_transport'
         out.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='telemetry_ros_') as directory:
             tmp=Path(directory)
@@ -44,8 +48,8 @@ class TelemetryRosTests(unittest.TestCase):
             # Y (linear) and X/Z (angular) sign changes before entering ROS.
             cfg['telemetry_motion'].update(source_domain=62,enabled=True,fuse_velocity=True,
                 calibration_confirmed=True,angular_scale=math.pi/180,
-                input_encoding='legacy_driver_from_flu_wire',
-                velocity_frame='world' if world else 'body',wire_frame='world' if world else 'body_flu',
+                input_encoding='legacy_driver_from_actor_body_wire' if actor else 'legacy_driver_from_flu_wire',
+                velocity_frame='world' if world else 'body',wire_frame='actor_body' if actor else ('world' if world else 'body_flu'),
                 world_frame_alignment_confirmed=world,
                 world_from_feedback_rotation=np.eye(3).tolist(),
                 orientation_child_from_base_rotation=np.eye(3).tolist(),
@@ -80,6 +84,13 @@ class TelemetryRosTests(unittest.TestCase):
                 msg.header.frame_id='odom';msg.child_frame_id=frame
                 msg.pose.pose.position.x=100000.;msg.pose.pose.orientation.w=float('nan')
                 msg.twist.twist.linear.x=v;msg.twist.twist.angular.z=-w
+                if actor:
+                    # Forward is raw -X, left yaw is raw +Y under the Actor
+                    # axial-vector convention. These two fields survive the
+                    # C++ decoder unchanged; body mode must ignore NaN pose.
+                    msg.twist.twist.linear.x=-v
+                    msg.twist.twist.angular.z=0.
+                    msg.twist.twist.angular.y=w
                 if world:
                     # Known world velocity turns with heading; after the same-
                     # packet attitude conversion the body velocity stays +X.
@@ -122,6 +133,7 @@ class TelemetryRosTests(unittest.TestCase):
                 result=dict(passed=True,arc_seconds=duration,expected_xy=expected.tolist(),observed_xy=observed.tolist(),
                     yaw=yaw,expected_yaw=omega*duration,twists=len(twists),poses=len(poses),
                     world_frame_test=world,
+                    actor_body_test=actor,
                     scope='Synthetic feedback in ROS domains 61/62; not a real UE driving accuracy test')
                 (out/'result.json').write_text(json.dumps(result,indent=2));print(json.dumps(result))
             finally:

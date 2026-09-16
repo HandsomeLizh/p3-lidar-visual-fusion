@@ -78,6 +78,42 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
         Depth: 1
+    - Class: rviz_default_plugins/Path
+      Name: P4 全局规划路线（绿色）
+      Enabled: true
+      Topic:
+        Value: /Car/T4/planning/global_route
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 112; 255; 120
+      Alpha: 1
+      Line Style: Billboards
+      Line Width: 0.12
+      Buffer Length: 1
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0.25
+    - Class: rviz_default_plugins/Path
+      Name: P4 局部路径（紫色）
+      Enabled: true
+      Topic:
+        Value: /Car/T4/planning/local_path
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+      Color: 238; 124; 255
+      Alpha: 1
+      Line Style: Billboards
+      Line Width: 0.16
+      Buffer Length: 1
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0.3
   Tools:
     - Class: rviz_default_plugins/Interact
       Hide Inactive Objects: true

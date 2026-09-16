@@ -13,6 +13,8 @@ class BoundedCloudStore(VoxelCloudStore):
         self.sample = np.empty((0, 3), dtype=np.float32)
         self.keys = np.empty((0, 3), dtype=np.int64)
         self.rank = np.empty(0, dtype=np.uint64)
+        self.sweep_column=None
+        self.sweep_rowid=0
         if self.preview_cap < 1:
             raise ValueError("preview_points must be positive")
         # Restart/export-view path, streamed; normal new runs start empty.
@@ -63,6 +65,53 @@ class BoundedCloudStore(VoxelCloudStore):
             return self.sample
         ix = np.argpartition(self.rank, cap-1)[:cap]
         return self.sample[ix]
+
+    def local_candidates(self, center, radius, limit):
+        low=np.floor((np.asarray(center)-radius)/self.voxel_size).astype(int)
+        high=np.floor((np.asarray(center)+radius)/self.voxel_size).astype(int)
+        if self.sweep_column is None or not low[0]<=self.sweep_column<=high[0]:
+            self.sweep_column=int(low[0]);self.sweep_rowid=0
+        rows=[]
+        # Equality on X plus a Y range uses the existing (ix,iy,iz) index.
+        # Never scan all historical rowids as the vehicle moves across the map.
+        for _ in range(int(high[0]-low[0]+1)):
+            remaining=int(limit)-len(rows)
+            batch=self.connection.execute(
+                'SELECT rowid,ix,iy,iz,x,y,z FROM voxels WHERE ix=? '
+                'AND iy BETWEEN ? AND ? AND iz BETWEEN ? AND ? AND rowid>? '
+                'ORDER BY rowid LIMIT ?',
+                (self.sweep_column,int(low[1]),int(high[1]),int(low[2]),int(high[2]),self.sweep_rowid,remaining)).fetchall()
+            rows.extend(batch)
+            if len(batch)==remaining:
+                self.sweep_rowid=int(batch[-1][0]);break
+            self.sweep_column=self.sweep_column+1 if self.sweep_column<high[0] else int(low[0])
+            self.sweep_rowid=0
+        return np.asarray(rows,dtype=float).reshape(-1,7)
+
+    def remove_rows(self, rows):
+        rows=np.asarray(rows).reshape(-1,7)
+        with self.connection:
+            before=self.connection.total_changes
+            self.connection.executemany('DELETE FROM voxels WHERE rowid=? AND ix=? AND iy=? AND iz=?',
+                (tuple(map(int,row[:4])) for row in rows))
+            self.count-=self.connection.total_changes-before
+        deleted={tuple(row[1:4].astype(np.int64)) for row in rows}
+        keep=np.array([tuple(k) not in deleted for k in np.floor(self.sample/self.voxel_size).astype(np.int64)],dtype=bool)
+        self.sample,self.keys,self.rank=self.sample[keep],self.keys[keep],self.rank[keep]
+
+    def column_points(self, cell, resolution):
+        """Read one XY cell in chunks, independent of total map extent."""
+        low=np.asarray(cell)*resolution;high=low+resolution
+        a=np.floor(low/self.voxel_size).astype(int);b=np.floor(high/self.voxel_size).astype(int)
+        for ix in range(a[0],b[0]+1):
+            cursor=self.connection.execute('SELECT x,y,z FROM voxels WHERE ix=? AND iy BETWEEN ? AND ?',
+                (int(ix),int(a[1]),int(b[1])))
+            while True:
+                rows=cursor.fetchmany(4096)
+                if not rows:break
+                points=np.asarray(rows,dtype=float)
+                keep=((points[:,:2]>=low)&(points[:,:2]<high)).all(axis=1)
+                if keep.any():yield points[keep]
 
     def checkpoint(self):
         self.connection.commit()
