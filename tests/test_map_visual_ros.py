@@ -15,7 +15,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile,DurabilityPolicy,ReliabilityPolicy
 from nav_msgs.msg import Path as RosPath
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Header
+from std_msgs.msg import Header,String
 from grid_map_msgs.msg import GridMap
 import yaml
 from t3_lidar_visual_fusion.terrain_mapper import TerrainMapper
@@ -86,6 +86,20 @@ def main():
             np.testing.assert_allclose([goals[0].pose.position.x,goals[0].pose.position.y],[3.,3.],atol=1e-6)
             assert abs(goals[0].pose.orientation.z-math.sqrt(.5))<1e-6
             drain(.3);assert len(goals)==1,'Goal was repeated'
+            monitor.on_fusion_health(String(data=json.dumps(dict(localization_valid=False))))
+            assert not monitor.request_goal(3.,3.,0.),'Goal accepted without qualified localization'
+            if window:
+                window.refresh();window.root.update()
+                assert '正在恢复' in window.status.cget('text')
+            monitor.on_fusion_health(String(data=json.dumps(dict(localization_valid=True,output_source='visual'))))
+            assert monitor.request_goal(3.,3.,0.)
+            monitor.on_fusion_health(String(data=json.dumps(dict(localization_valid=False))))
+            monitor.send_requested_goal();drain(.1)
+            assert len(goals)==1,'Queued goal sent after localization became invalid'
+            monitor.on_fusion_health(String(data=json.dumps(dict(localization_valid=True,output_source='visual'))))
+            monitor.fusion_health_at-=4.
+            assert not monitor.request_goal(3.,3.,0.),'Goal accepted with stale localization health'
+            monitor.fusion_health=None
             intervals=[];previous=time.monotonic();rss=[]
             for i in range(600 if window else 60):
                 routes['local'].publish(path([(0,0),(0,1.+.005*i),(0,2.+.005*i)]))
@@ -105,6 +119,7 @@ def main():
             drain(.3);assert monitor.grid is None
             assert not monitor.request_goal(3,3,0)
             result=dict(passed=True,gui_tested=window is not None,operator_goals=len(goals),
+                localization_health_display_and_goal_checks=True,
                 global_layers=list(grids[0].layers),display_points=monitor.display_points,
                 initial_map_publication_sec=publication,ui_loop_p95_sec=float(np.percentile(intervals,95)),
                 ui_loop_max_sec=max(intervals),rss_first_mib=rss[0],rss_last_mib=rss[-1],rss_peak_mib=max(rss),
