@@ -282,7 +282,7 @@ lidar_max_pose_variance: 100.0
 independent_visual_min_score: 0.45
 lidar_backend: voxelmap
 voxelmap:
-  threads: 2
+  threads: 4
   voxel_size: 2.0
   downsample_size: 0.2
   max_iterations: 20

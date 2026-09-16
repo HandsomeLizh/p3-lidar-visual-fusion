@@ -38,6 +38,15 @@ int main() {
   BuildResidualListOMP(map,2.,3.,0,many,matches,missing);
   BuildResidualListNormal(map,2.,3.,0,many,serial,serial_missing);
   require(matches.size()==many.size() && serial.size()==matches.size(),"parallel and serial results differ");
+  for(int threads:{1,2,4}) {
+    BuildResidualListOMP(map,2.,3.,0,many,matches,missing,threads);
+    require(matches.size()==serial.size() && missing.size()==serial_missing.size(),"thread count changed matching");
+    for(size_t i=0;i<matches.size();++i)
+      require(matches[i].point==serial[i].point && matches[i].normal==serial[i].normal &&
+              matches[i].center==serial[i].center && matches[i].plane_cov==serial[i].plane_cov &&
+              matches[i].d==serial[i].d && matches[i].layer==serial[i].layer,
+              "thread count changed match order or plane data");
+  }
   clear(map);
   auto on_ground=point(3.,.5,-1.);on_ground.cov=M3D::Identity();on_ground.cov(2,2)=9.;
   map[VOXEL_LOC(1,0,-1)]=plane(2.9,.5,-1.);

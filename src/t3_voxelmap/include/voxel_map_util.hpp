@@ -794,14 +794,15 @@ inline bool find_plane_match(const unordered_map<VOXEL_LOC, OctoTree *> &map,
 void BuildResidualListOMP(const unordered_map<VOXEL_LOC, OctoTree *> &voxel_map,
     const double voxel_size, const double sigma_num, const int max_layer,
     const std::vector<pointWithCov> &pv_list, std::vector<ptpl> &ptpl_list,
-    std::vector<Eigen::Vector3d> &non_match) {
+    std::vector<Eigen::Vector3d> &non_match, const int threads=2) {
   ptpl_list.clear(); non_match.clear();
   std::vector<ptpl> matches(pv_list.size());
   // A byte per point avoids vector<bool>'s shared-bit writes under OpenMP.
   std::vector<uint8_t> useful(pv_list.size(),0);
 #ifdef MP_EN
-  omp_set_num_threads(MP_PROC_NUM);
-#pragma omp parallel for
+  // Explicit per-region setting also works when a ROS executor worker calls
+  // this function; omp_set_num_threads in the node constructor is thread-local.
+#pragma omp parallel for num_threads(threads)
 #endif
   for (int i=0; i<static_cast<int>(pv_list.size()); ++i)
     useful[i]=find_plane_match(voxel_map,voxel_size,sigma_num,max_layer,pv_list[i],matches[i]);

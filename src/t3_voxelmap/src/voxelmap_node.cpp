@@ -56,7 +56,7 @@ class VoxelMapNode : public rclcpp::Node {
     Eigen::Matrix3d last_map_rotation_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d last_map_position_ = Eigen::Vector3d::Zero();
     size_t map_keyframes_ = 0;
-    int max_layer_, max_points_, max_iterations_, max_roots_, max_input_;
+    int max_layer_, max_points_, max_iterations_, max_roots_, max_input_, threads_;
     std::vector<int> layer_size_;
     Eigen::Matrix4d base_from_lidar_;
     std::ofstream timing_;
@@ -233,7 +233,7 @@ class VoxelMapNode : public rclcpp::Node {
             auto points=points_with_cov(cloud,body_cov,false);
             std::vector<ptpl> matches;
             std::vector<V3D> non_matches;
-            BuildResidualListOMP(map_,voxel_size_,3.,max_layer_,points,matches,non_matches);
+            BuildResidualListOMP(map_,voxel_size_,3.,max_layer_,points,matches,non_matches,threads_);
             matching+=seconds(start,Clock::now());
             start=Clock::now();
             if (matches.size()<6) return false;
@@ -665,11 +665,12 @@ public:
             rclcpp::SensorDataQoS().keep_last(capacity),std::bind(&VoxelMapNode::imu_sample,this,std::placeholders::_1),imu_options);
         if(deskew_enabled_)deskewed_cloud_=create_publisher<sensor_msgs::msg::PointCloud2>("/fusion/lidar_deskewed",rclcpp::QoS(2).reliable());
         auto path=declare_parameter<std::string>("timing_path","");if(!path.empty())timing_.open(path);
-        omp_set_num_threads(declare_parameter<int>("threads",2));
+        threads_=declare_parameter<int>("threads",2);
+        if(threads_<1 || threads_>8)throw std::runtime_error("LiDAR threads must be in [1,8]");
         odom_=create_publisher<nav_msgs::msg::Odometry>("/fusion/lio_raw",30);
         metrics_=create_publisher<std_msgs::msg::String>("/fusion/lidar_metrics",10);
         quality_pub_=create_publisher<std_msgs::msg::String>("/fusion/lidar_quality",10);
-        input_=create_subscription<sensor_msgs::msg::PointCloud2>("/fusion/lidar",rclcpp::QoS(2).reliable(),
+        input_=create_subscription<sensor_msgs::msg::PointCloud2>("/fusion/lidar",rclcpp::QoS(1).reliable(),
              std::bind(&VoxelMapNode::receive_cloud,this,std::placeholders::_1));
         RCLCPP_INFO(get_logger(),"VoxelMap optional IMU=%s, calibration=%s; no-IMU CV fallback; root cap %d",
             mode.c_str(),imu_cfg.calibrated?"confirmed":"unconfirmed",max_roots_);

@@ -4,7 +4,7 @@
 Never sends vehicle commands. Only processes started by this test are stopped.
 An input driver already running in the sensor domain is reused.
 """
-import argparse, collections, json, os, signal, subprocess, time
+import argparse, collections, hashlib, json, os, signal, subprocess, time
 from pathlib import Path
 import numpy as np
 import rclpy
@@ -23,6 +23,7 @@ ROOT=Path(__file__).resolve().parents[1]
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--seconds',type=float,default=65.);parser.add_argument('--output',required=True)
     parser.add_argument('--require-stereo-map',action='store_true')
+    parser.add_argument('--profile',type=Path,default=ROOT/'config/hardware104.yaml')
     args=parser.parse_args();out=Path(args.output).resolve();out.mkdir(parents=True,exist_ok=False)
     domain=int(os.environ['ROS_DOMAIN_ID'])
     if domain in (10,19,57):raise ValueError('Choose a separate test domain, such as 73')
@@ -76,7 +77,7 @@ def main():
     try:
         if not camera_present:launch('camera',['bash',str(ROOT/'scripts/start_hardware_camera.sh')])
         pipeline=launch('pipeline',['ros2','launch',str(ROOT/'scripts/fusion.launch.py'),
-            'profile:='+str(ROOT/'config/hardware104.yaml'),'output_dir:='+str(out)])
+            'profile:='+str(args.profile.resolve()),'output_dir:='+str(out)])
         deadline=time.monotonic()+args.seconds
         while time.monotonic()<deadline:
             rclpy.spin_once(node,timeout_sec=.05)
@@ -97,6 +98,7 @@ def main():
         passed=lidar_passed and visual_passed and (not args.require_stereo_map or stereo_passed)
         report=dict(passed=passed,lidar_imu_mapping_passed=lidar_passed,
             visual_pipeline_passed=visual_passed,stereo_mapping_passed=stereo_passed,domain=domain,counts=dict(counts),last=last,
+            profile=str(args.profile.resolve()),profile_sha256=hashlib.sha256(args.profile.read_bytes()).hexdigest(),
             vehicle_commands_published=0,replay_used=False,camera_reused=camera_present,
             message_idle_sec=idle,imu_seed_overridden_by_visual=imu_seed_override,
             observed_rate_hz={k:(counts[k]-1)/(t-first_received[k]) for k,t in received_at.items() if counts[k]>1 and t>first_received[k]},
