@@ -163,8 +163,11 @@ ros2 topic echo --once /fusion/status
 | 提示已有任务运行 | 先 `./status.sh` 核对；其他人正在用时先协调，不要直接停任务 |
 | 控制窗口没打开 | `./start_simulation_sources.sh --check` 检查；确认查看的是远程桌面，缺少节点时运行启动脚本 |
 | 显示“视觉接续定位” | 视觉正在接替 LiDAR；查看 `/fusion/status` 的 `output_source` 和 `localization_valid` |
+| 显示“定位暂不可用” | 没有合格的正式定位结果，或健康状态超时；不只是 LiDAR 状态。视觉仍可能在跟踪，但重置后尚未接回地图坐标，或不确定性超限 |
 | 定位失效、地图长时间不更新 | 停车，检查数据源和 `fusion_status.json`、`map_statistics.json` |
 | 目标发出但车辆不走 | 查看 `bash /home/yanfa/P4/scripts/navigation.sh status`；确认目标区域已观测、P4 对齐就绪 |
 | 新按钮或新代码没生效 | 按第 3 节顺序重启；算法源码修改后先 `./build.sh` |
 
 进一步阅读：[文档索引](INDEX_CN.md) · [新机器环境](SETUP_CN.md) · [目录说明](DIRECTORY_CN.md)。
+
+判断整体定位先看 `localization_valid`。`vision_enabled: true` 只说明视觉观测可用；还要检查 `visual_continuity.anchored` 和 `filtered_quality.reason`。视觉重置后，不能直接把它的新原点当成旧地图原点。
