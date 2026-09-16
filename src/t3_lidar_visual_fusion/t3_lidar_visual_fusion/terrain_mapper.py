@@ -260,7 +260,8 @@ class TerrainMapper(Node):
             delta=np.abs(np.diff(elevation,axis=axis))
             a=[slice(None),slice(None)];b=a.copy();a[axis]=slice(1,None);b[axis]=slice(None,-1)
             step[tuple(a)]=np.fmax(step[tuple(a)],delta);step[tuple(b)]=np.fmax(step[tuple(b)],delta)
-        # Height spread detects multiple surfaces/vertical obstacles in one XY cell.
+        # Same-scan height spread detects multiple surfaces in one XY cell.
+        # Lifetime offsets remain in variance; they are not obstacle thickness.
         cost=np.fmax(slope/np.deg2rad(self.cfg.get("max_slope_deg",35.)),
                      np.fmax(step,m.height_range)/self.cfg.get("max_step_m",.3))
         hard_obstacle=np.isfinite(elevation)&((m.height_range>=self.cfg.get('max_step_m',.3))|
@@ -411,6 +412,7 @@ class TerrainMapper(Node):
         data=dict(self.stats,**self.grid.memory_stats(),**self.cloud.memory_stats(),**sample,
             pending=len(self.pending),memory_pressure=self.pressure,map_writable=not self.storage_paused,
             global_grid_available=self.global_available,overview_resolution=self.overview.resolution,
+            height_range_basis="maximum_within_scan_relief",
             global_published_revision=self.last_global_revision,
             dense_persisted_revision=self.dense_writer.persisted_revision,
             dense_export_error=str(self.dense_writer.last_error) if self.dense_writer.last_error else None,

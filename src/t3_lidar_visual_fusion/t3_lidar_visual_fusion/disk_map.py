@@ -13,8 +13,9 @@ import sqlite3
 import numpy as np
 import yaml
 from .legacy.tiled_semantic_map import TiledSemanticMapManager
+from .surface_grid import SurfaceGrid
 
-FIELDS = TiledSemanticMapManager._SNAPSHOT_TILE_FIELDS
+FIELDS = TiledSemanticMapManager._SNAPSHOT_TILE_FIELDS + (("surface_height_range", np.float32),)
 
 
 def configure_sqlite(db, cache_mib=16):
@@ -76,7 +77,13 @@ class TileCache:
         if row is not None:
             with np.load(BytesIO(row[0]), allow_pickle=False) as data:
                 for name, dtype in FIELDS:
-                    value = np.asarray(data[name], dtype=dtype)
+                    if name == "surface_height_range" and name not in data:
+                        # Old runs did not retain per-scan relief. Preserve their
+                        # conservative evidence; do not silently relabel obstacles.
+                        value = np.where(tile.elevation_count > 0,
+                            tile.elevation_max - tile.elevation_min, 0.).astype(dtype)
+                    else:
+                        value = np.asarray(data[name], dtype=dtype)
                     if value.shape != getattr(tile, name).shape:
                         raise ValueError("Corrupt elevation tile " + str(key))
                     setattr(tile, name, value.copy())
@@ -150,6 +157,10 @@ class DiskElevationMap(TiledSemanticMapManager):
         maximum=self.tiles.db.execute("SELECT COALESCE(MAX(revision),0) FROM tiles").fetchone()[0]
         self.update_id = max(int(row[0]) if row else 0,int(maximum))
 
+    def _new_tile(self, key):
+        x, y = self._tile_origin(key)
+        return SurfaceGrid(**self._tile_kwargs, origin_x=x, origin_y=y)
+
     def update_elevation_only(self, *, points_map):
         points = np.asarray(points_map, dtype=np.float64).reshape(-1, 3)
         points = points[np.isfinite(points).all(axis=1)]
@@ -189,6 +200,7 @@ class DiskElevationMap(TiledSemanticMapManager):
             tile=self.tiles.get(tuple(pair),writable=True)
             if tile is None:continue
             col,row=cell-pair*self.tile_cells
+            surface_range = tile.surface_height_range[row,col]
             for name,_ in FIELDS:
                 values=getattr(tile,name)
                 fill=np.inf if name=='elevation_min' else -np.inf if name=='elevation_max' else 0
@@ -196,6 +208,11 @@ class DiskElevationMap(TiledSemanticMapManager):
                 else:values[row,col]=fill
             for points in cloud.column_points(cell,self.resolution):
                 tile._update_elevation_cell(row,col,points[:,2])
+            # Remaining persistent points mix acquisition times. Cleanup can
+            # reduce actual relief, but must not turn temporal drift into relief.
+            remaining = (tile.elevation_max[row,col] - tile.elevation_min[row,col]
+                         if tile.elevation_count[row,col] else 0.)
+            tile.surface_height_range[row,col] = min(surface_range, max(0., remaining))
             tile._fusion_revision=self.update_id
 
     def window_geometry(self, **kwargs):

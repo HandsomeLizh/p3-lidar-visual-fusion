@@ -273,15 +273,19 @@ class LayeredSemanticGridMap:
         self.elevation_count[row, column] = new_count
         self.elevation_mean[row, column] = new_mean
         self.elevation_M2[row, column] = new_M2
+        batch_min = float(np.min(accepted))
+        batch_max = float(np.max(accepted))
         self.elevation_min[row, column] = min(
-            self.elevation_min[row, column],
-            float(np.min(accepted)),
+            self.elevation_min[row, column], batch_min,
         )
         self.elevation_max[row, column] = max(
-            self.elevation_max[row, column],
-            float(np.max(accepted)),
+            self.elevation_max[row, column], batch_max,
         )
+        self._observe_elevation_batch(row, column, batch_min, batch_max)
         return batch_count
+
+    def _observe_elevation_batch(self, row, column, minimum, maximum):
+        """Optional derived statistics; lifetime height fusion stays unchanged."""
 
     def update(
         self,

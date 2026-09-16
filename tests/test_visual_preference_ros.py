@@ -16,6 +16,7 @@ from scipy.spatial.transform import Rotation
 import yaml
 from t3_lidar_visual_fusion.adaptive_guard import AdaptiveGuard
 from t3_lidar_visual_fusion.disk_map import DiskElevationMap
+from t3_lidar_visual_fusion.legacy.tiled_semantic_map import TiledSemanticMapManager
 from t3_lidar_visual_fusion.terrain_mapper import TerrainMapper
 from t3_lidar_visual_fusion.ros_utils import transform_from_pose
 
@@ -30,7 +31,9 @@ def ground_regression(root, poses, raw_poses):
     cloud=np.r_[ground,tops]
     result={}
     for name,transforms in [('corrected',poses),('unconstrained_visual',raw_poses)]:
-        grid=DiskElevationMap(root/(name+'.sqlite'),resolution=.2,tile_cells=32,max_tiles=8,cache_mib=16)
+        # Preserve the original failure fixture, including lifetime height spread.
+        grid=(TiledSemanticMapManager(resolution=.2,tile_cells=32) if name=='unconstrained_visual' else
+              DiskElevationMap(root/(name+'.sqlite'),resolution=.2,tile_cells=32,max_tiles=8,cache_mib=16))
         try:
             for transform in transforms[::8]:
                 grid.update_elevation_only(points_map=cloud@transform[:3,:3].T+transform[:3,3])
@@ -44,7 +47,8 @@ def ground_regression(root, poses, raw_poses):
             actual_rock=(x>2.)&(x<2.5)&(y>1.)&(y<1.5)
             result[name]=dict(flat_black_fraction=black,
                 rock_black_cells=int(np.count_nonzero(layers['obstacle'][actual_rock]>.5)))
-        finally:grid.close()
+        finally:
+            if hasattr(grid,'close'):grid.close()
     assert result['unconstrained_visual']['flat_black_fraction']>.5,result
     assert result['corrected']['flat_black_fraction']<.01,result
     assert result['corrected']['rock_black_cells']>0,result
