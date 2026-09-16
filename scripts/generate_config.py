@@ -98,6 +98,15 @@ def generate(profile_path, output):
         # causing long, unconstrained acceleration extrapolation between scans.
         ekf["initial_estimate_covariance"]=np.diag(initial).reshape(-1).tolist()
         ekf["process_noise_covariance"]=np.diag(process).reshape(-1).tolist()
+    telemetry=p.get("telemetry_motion",{})
+    if telemetry.get("enabled",False) and telemetry.get("fuse_velocity",False):
+        if not telemetry.get("calibration_confirmed",False):
+            raise ValueError("Telemetry integration requires confirmed units and body-frame convention")
+        # Independent velocity feedback supports the existing EKF propagation.
+        # Do not consume the UE absolute pose or disguise velocity as IMU data.
+        ekf.update(twist0="/fusion/telemetry_twist",
+            twist0_config=[False]*6+[True]*6+[False]*3,
+            twist0_queue_size=10,twist0_rejection_threshold=5.0)
     (output/"ekf.yaml").write_text(yaml.safe_dump({"ekf_filter_node":{"ros__parameters":ekf}},sort_keys=False))
     return p
 

@@ -21,6 +21,21 @@ class StationaryDetector:
         self.cloud_anchor=None;self.cloud_last=None;self.cloud_evidence=deque(maxlen=12)
         self.consecutive=0;self.last_check=None;self.last_wall=0.;self.zero_updates=0
         self.result={'state':'unknown','reason':'waiting_for_evidence'}
+        self.telemetry_evidence=deque(maxlen=256)
+        self.telemetry_wall=0.
+
+    def velocity_feedback(self,stamp,velocity):
+        velocity=np.asarray(velocity)
+        if (velocity.shape!=(6,) or not np.isfinite(velocity).all() or not np.isfinite(stamp)
+                or (self.telemetry_evidence and stamp<=self.telemetry_evidence[-1][0])):
+            raise ValueError('Invalid or out-of-order velocity feedback')
+        speed=float(np.linalg.norm(velocity[:3]));angular=float(np.linalg.norm(velocity[3:]))
+        moving=speed>self.speed_limit or angular>self.angular_limit
+        self.telemetry_evidence.append((stamp,moving))
+        self.telemetry_wall=time.monotonic()
+        if moving:
+            self.invalidate('telemetry_motion_detected')
+            self.result['state']='moving'
 
     def invalidate(self,reason):
         self.consecutive=0
@@ -88,6 +103,16 @@ class StationaryDetector:
         if self.last_check is not None and not 0<stamp-self.last_check<=self.max_gap:
             self.invalidate('nonconsecutive_visual_motion')
         self.last_check=stamp;self.last_wall=time.monotonic()
+        telemetry='unavailable'
+        if self.telemetry_evidence and time.monotonic()-self.telemetry_wall<=.5:
+            t,moving=min(self.telemetry_evidence,key=lambda item:abs(item[0]-stamp))
+            aligned=abs(t-stamp)<=.15
+            # Current movement vetoes delayed visual claims of stationarity.
+            # A quiet telemetry value alone never establishes a zero constraint.
+            if self.telemetry_evidence[-1][1] or (aligned and moving):
+                self.invalidate('telemetry_motion_detected');self.result['state']='moving'
+                return False
+            telemetry='quiet' if aligned else 'not_aligned'
         images=[self._at(h,stamp) for h in self.image_evidence]
         cloud=self._at(self.cloud_evidence,stamp)
         if any(v is None for v in images) or cloud is None:
@@ -101,7 +126,8 @@ class StationaryDetector:
         self.result={'state':'stationary' if stopped else ('confirming' if quiet else 'moving'),
                      'reason':'image_lidar_visual_motion_consensus','stamp_sec':stamp,
                      'consecutive':self.consecutive,'image_flow_p90_px':[v['flow_p90_px'] for v in images],
-                     **cloud,'visual_speed_mps':speed,'visual_angular_speed_rps':angular}
+                     **cloud,'visual_speed_mps':speed,'visual_angular_speed_rps':angular,
+                     'telemetry_check':telemetry}
         return stopped
 
     def status(self):

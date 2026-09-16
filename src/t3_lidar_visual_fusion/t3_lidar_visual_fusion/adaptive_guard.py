@@ -20,6 +20,7 @@ from .odometry_guard import OdometryGuard
 from .ros_utils import stamp_sec, transform_from_pose, set_pose, cloud_arrays
 from sensor_msgs.msg import PointCloud2
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from geometry_msgs.msg import TwistWithCovarianceStamped
 
 
 class AdaptiveGuard(OdometryGuard):
@@ -64,7 +65,30 @@ class AdaptiveGuard(OdometryGuard):
             self.stationary=StationaryDetector(**stationary_cfg)
             self.create_subscription(PointCloud2,"/fusion/lidar",self.stationary_cloud,
                 QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
+        self.telemetry_status={"enabled":bool(self.cfg.get("telemetry_motion",{}).get("enabled",False))}
+        self.telemetry_status_wall=0.
+        if self.telemetry_status["enabled"]:
+            self.create_subscription(String,"/fusion/telemetry_status",self.telemetry_report,3)
+            if self.stationary is not None:
+                self.create_subscription(TwistWithCovarianceStamped,"/fusion/telemetry_twist",self.telemetry_twist,10)
         self.get_logger().info("Adaptive repair: persistent epoch transforms and full directional covariance")
+
+    def telemetry_report(self,msg):
+        try:
+            data=json.loads(msg.data)
+            if not isinstance(data,dict):return
+            self.telemetry_status=data;self.telemetry_status_wall=time.monotonic()
+        except (ValueError,TypeError):pass
+
+    def telemetry_twist(self,msg):
+        try:
+            stamp=stamp_sec(msg)
+            age=self.get_clock().now().nanoseconds*1e-9-stamp
+            # This detector only uses speed norms, which are rotation-invariant.
+            if msg.header.frame_id not in ("base_link","vehicle_feedback_unverified") or not -.05<=age<=.4:return
+            v,w=msg.twist.twist.linear,msg.twist.twist.angular
+            self.stationary.velocity_feedback(stamp,[v.x,v.y,v.z,w.x,w.y,w.z])
+        except ValueError:self.stationary.invalidate("invalid_velocity_feedback")
 
     def image(self,msg,side):
         super().image(msg,side)
@@ -353,6 +377,9 @@ class AdaptiveGuard(OdometryGuard):
             self.close_vision("vision_timeout")
         lidar, visual = self.active_sources()
         mode = "lidar_visual" if lidar and visual else "visual_primary" if visual else "lidar_only" if lidar else "degraded"
+        telemetry=dict(self.telemetry_status)
+        if telemetry.get("enabled") and time.monotonic()-self.telemetry_status_wall>2.:
+            telemetry.update(active=False,reason="telemetry_status_timeout")
         data = dict(self.counters, visual_source=self.visual_source,
             learned_backend=self.cfg.get("learned_visual", {}).get("backend"),
             fusion_strategy="persistent_epoch_full_covariance", operating_mode=mode,
@@ -374,6 +401,7 @@ class AdaptiveGuard(OdometryGuard):
             visual_anchors=self.visual_anchors, lidar_anchors=self.lidar_anchors,
             quality_basis="overlap_residual_and_directional_covariance",
             stationary=self.stationary.status() if self.stationary is not None else {"state":"disabled"},
+            telemetry=telemetry,
             lidar_quality=self.lidar_quality, motion_consistency=self.motion_status,
             adaptive_rejections=self.adaptive_rejections, visual_timing=self.timing_status,
             visual_timing_rejected=self.visual_timing_rejected,

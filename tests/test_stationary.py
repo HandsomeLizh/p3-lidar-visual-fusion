@@ -67,5 +67,25 @@ class StationaryTests(unittest.TestCase):
     def test_nonfinite_motion_is_never_stationary(self):
         self.confirm();self.assertFalse(self.frame(velocity=[np.nan,0,0,0,0,0]))
 
+    def test_current_velocity_releases_delayed_visual_stationarity(self):
+        self.confirm()
+        self.detector.velocity_feedback(self.stamp+2.,[.024,0,0,0,0,0])
+        self.assertEqual(self.detector.status()['state'],'moving')
+        self.assertFalse(self.frame())  # Images are older than the movement feedback.
+        self.assertEqual(self.detector.status()['reason'],'telemetry_motion_detected')
+
+    def test_zero_feedback_does_not_override_image_motion(self):
+        self.confirm()
+        self.detector.velocity_feedback(self.stamp+1.,np.zeros(6))
+        self.assertFalse(self.frame(right_shift=1.))
+
+    def test_expired_feedback_allows_existing_sensor_consensus(self):
+        self.confirm()
+        self.detector.velocity_feedback(self.stamp+1.,[.024,0,0,0,0,0])
+        self.assertFalse(self.frame())
+        with patch('t3_lidar_visual_fusion.stationary.time.monotonic',return_value=self.detector.telemetry_wall+1.):
+            outcomes=[self.frame() for _ in range(3)]
+        self.assertEqual(outcomes,[False,False,True])
+
 
 if __name__=='__main__':unittest.main()

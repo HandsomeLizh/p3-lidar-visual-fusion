@@ -10,5 +10,6 @@ setup(name="t3_lidar_visual_fusion", version="0.1.0", packages=find_packages(),
           "sensor_adapter = t3_lidar_visual_fusion.sensor_adapter:main",
           "odometry_guard = t3_lidar_visual_fusion.odometry_guard:main",
             "adaptive_guard = t3_lidar_visual_fusion.adaptive_guard:main",
-          "terrain_mapper = t3_lidar_visual_fusion.terrain_mapper:main",
+           "terrain_mapper = t3_lidar_visual_fusion.terrain_mapper:main",
+           "telemetry_motion = t3_lidar_visual_fusion.telemetry_motion:main",
           "learned_odometry = t3_lidar_visual_fusion.learned_odometry:main"]})

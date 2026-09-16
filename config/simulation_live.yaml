@@ -254,6 +254,26 @@ mapping_pose_settle_sec: 1.6
 normalized_camera_input: true
 ekf_sensor_timeout: 10.0
 
+# Optional UE velocity assistance; absolute telemetry pose is never forwarded.
+# Receiver time; the driver's base_link label does not prove the velocity axes.
+# Keep integration disabled until units, all axes and timing are validated.
+telemetry_motion:
+  enabled: true
+  fuse_velocity: false
+  calibration_confirmed: false
+  linear_scale: 1.0
+  angular_scale: 0.017453292519943295
+  base_from_feedback_rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+  source_domain: 10
+  topic: /car/odom
+  frame_id: base_link
+  max_output_hz: 25.0
+  max_age_sec: 0.3
+  future_tolerance_sec: 0.05
+  max_speed_mps: 4.0
+  max_angular_speed_rps: 2.0
+  standard_deviation: [0.05, 0.05, 0.05, 0.03, 0.03, 0.03]
+
 stationary:
   enabled: true
   confirm_frames: 3

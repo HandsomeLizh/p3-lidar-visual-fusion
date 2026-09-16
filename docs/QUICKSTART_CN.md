@@ -176,7 +176,15 @@ ros2 node list
 - UE 的 `meta.json` 有姿态、速度和角速度字段；当前捕获的文件没有加速度字段。检查时 `/imu/data` 没有发布者。附近端口未找到新服务不代表仿真一定没有 IMU。
 - 实时配置已增加图像辅助静止检测：两路图像特征位移、可靠视觉运动和点云变化连续 3 帧一致，才把该帧视觉运动约束替换为零速度。证据异常、变化或过期立即解除；可在 `/fusion/status` 的 `stationary` 字段查看。它不是任意场景下绝对可靠的停车判定。
 
-细节见 [在线漂移与传输核查](live_drift_and_transport.md)。
+### 6668 车辆反馈（2026-09-16）
+
+- P4 复用 `/car/telemetry`，将车辆模型坐标转换后，由相邻位姿计算速度。它没有在这套桥接中读取到完整 IMU，加速度与远端采样时间戳仍缺失。
+- 新版本建图已编译独立速度接收和静止辅助，下次 `./start_live.sh` 自动启动。它只读取 `/car/odom` 的速度，不读取绝对位姿；角速度按度/秒转换。
+- 当前 `fuse_velocity: false`：长 bag 核验发现原始速度轴仍不正确，暂不用于位姿积分。不能只翻转 `vx`，也不能把 P4 的真值位姿差分当作 IMU。
+- 新话题（域 57）：`/fusion/telemetry_twist`、`/fusion/telemetry_status`。未标定速度使用 `vehicle_feedback_unverified` 帧名；反馈只能辅助否决静止，不能仅凭零反馈锁住位姿。
+- 本轮保留现场原建图进程，避免改变 P4 已对齐的原点；P3 重启／定位重置后，需重新对齐 P4 反馈输入。
+
+细节见远程 `docs/velocity_feedback.md` 与 [在线漂移与传输核查](live_drift_and_transport.md)。
 
 ## 常见情况
 

@@ -45,6 +45,7 @@ def nodes(context):
       Node(package="t3_lidar_visual_fusion",executable="terrain_mapper",
            parameters=[params,{"output_dir":str(out)}],output="screen")]
     optional_visual=[]
+    optional_motion=[]
     if value("external_estimates").lower()=="true":n=n[3:]
     elif p.get("visual_source","vins") in ("roma_external","none"):n.pop(2)
     elif p.get("visual_source")=="learned":
@@ -57,6 +58,10 @@ def nodes(context):
             reason="visual_process_exited",returncode=getattr(event,"returncode",None),
             action="continue_lidar_only")))
         return [LogInfo(msg="Visual frontend exited; continuing LiDAR localization and mapping")]
+    if p.get("telemetry_motion",{}).get("enabled",False):
+        telemetry=Node(package="t3_lidar_visual_fusion",executable="telemetry_motion",
+            parameters=[dict(params,output_dir=str(out))],output="screen")
+        n.append(telemetry);optional_motion.append(telemetry)
     transforms=[("map","odom",np.eye(4)),("base_link","lidar",np.asarray(p["base_from_lidar"])),
         ("base_link","imu",np.asarray(p["base_from_imu"])),
         ("base_link","camera_left_optical",np.asarray(p["base_from_camera_left"])),
@@ -70,10 +75,13 @@ def nodes(context):
                       name="fusion_static_"+child,arguments=args,output="screen"))
     core_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,
         on_exit=[EmitEvent(event=Shutdown(reason="Critical LiDAR/fusion/map component exited"))]))
-        for node in n if node not in optional_visual]
+         for node in n if node not in optional_visual+optional_motion]
     visual_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,on_exit=visual_exited))
         for node in optional_visual]
-    return n+core_handlers+visual_handlers
+    motion_handlers=[RegisterEventHandler(OnProcessExit(target_action=node,
+        on_exit=[LogInfo(msg="Telemetry relay exited; continuing LiDAR/visual fusion without fresh velocity assistance")]))
+        for node in optional_motion]
+    return n+core_handlers+visual_handlers+motion_handlers
 
 
 def generate_launch_description():
