@@ -548,6 +548,7 @@ class Window:
             goal_status=self.node.goal_status
             unavailable=self.node.localization_unavailable()
             output_source=(self.node.fusion_health or {}).get('output_source')
+            output_preference=(self.node.fusion_health or {}).get('pose_source_preference')
         self.goal_label.config(text=('选点模式：松开鼠标将交给 P4 规划并行驶；Esc 取消' if self.goal_mode else goal_status))
         age = time.monotonic() - pose_at if pose_at else None
         outcome = timing.get('outcome', '')
@@ -566,7 +567,8 @@ class Window:
         if phase is None and unavailable:
             label,color='定位暂不可用 · 正在恢复','#ffb366'
         elif phase is None and output_source=='visual' and age is not None:
-            label,color=f'视觉接续定位 · 最近更新 {age:.1f} 秒前','#53e0e5'
+            name='视觉优先定位' if output_preference=='visual' else '视觉接续定位'
+            label,color=f'{name} · 最近更新 {age:.1f} 秒前','#53e0e5'
         self.status.config(text=label, fg=color)
         if path and path.poses:
             last = path.poses[-1].pose

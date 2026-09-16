@@ -42,7 +42,11 @@ class AdaptiveGuard(OdometryGuard):
         self.last_visual_motion_interval = None
         continuity_cfg=dict(self.cfg.get('visual_continuity',{}))
         self.visual_continuity_enabled=continuity_cfg.pop('enabled',False)
-        self.visual_continuity=VisualContinuity(max_gap=self.cfg['vision_gate']['max_gap'],**continuity_cfg)
+        continuity_gap=continuity_cfg.pop('max_gap',self.cfg['vision_gate']['max_gap'])
+        self.visual_continuity=VisualContinuity(max_gap=continuity_gap,**continuity_cfg)
+        self.pose_source_preference=self.cfg.get('pose_source_preference','balanced')
+        if self.pose_source_preference not in ('balanced','visual'):
+            raise ValueError('pose_source_preference must be balanced or visual')
         self.visual_candidate=None;self.prefer_visual_output=False;self.output_source='waiting'
         self.ekf_references=deque(maxlen=128)
         self.visual_pose_pub=self.create_publisher(Odometry,'/fusion/visual_continuous',3)
@@ -321,11 +325,18 @@ class AdaptiveGuard(OdometryGuard):
                 # Publication still waits for the visual recovery gate below.
                 self.visual_continuity.observe(stamp,msg.header.frame_id,transform,weighted_covariance)
                 self.visual_candidate=None
-                if reference is not None:
-                    ref_cov=self.lidar_reference_covariance_at(stamp)
-                    if ref_cov is not None:self.visual_continuity.anchor(stamp,reference,ref_cov)
-                for sample in reversed(self.ekf_references):
-                    if self.visual_continuity.anchor(*sample):break
+                # During preferred visual tracking, keep its established frame.
+                # Re-anchoring every frame would simply copy LiDAR's jitter.
+                # Startup, a new epoch and recovery from EKF fallback still
+                # establish a co-timed anchor before selecting visual output.
+                keep_reference=(self.pose_source_preference=='visual' and self.output_source=='visual'
+                    and self.output_qualified and self.visual_continuity.reference is not None)
+                if not keep_reference:
+                    if reference is not None:
+                        ref_cov=self.lidar_reference_covariance_at(stamp)
+                        if ref_cov is not None:self.visual_continuity.anchor(stamp,reference,ref_cov)
+                    for sample in reversed(self.ekf_references):
+                        if self.visual_continuity.anchor(*sample):break
             if result.transform is None:
                 if result.reason != "recovering":
                     self.visual_motion.reset()
@@ -384,9 +395,14 @@ class AdaptiveGuard(OdometryGuard):
         lidar,visual=self.active_sources()
         if not self.visual_continuity_enabled or not visual or self.visual_candidate is None:
             self.prefer_visual_output=False;return False
+        age=self.get_clock().now().nanoseconds/1e9-stamp_sec(self.visual_candidate)
+        if age>self.cfg.get('visual_max_age_sec',1.5) or age<-self.cfg.get('visual_future_tolerance_sec',.1):
+            self.prefer_visual_output=False;return False
         cov=pose_covariance(self.visual_candidate.pose.covariance)
         if not self.visual_covariance_qualified(cov):
             self.prefer_visual_output=False;return False
+        if self.pose_source_preference=='visual':
+            self.prefer_visual_output=True;return True
         if not lidar:
             self.prefer_visual_output=True;return True
         reference=self.lidar_covariances[-1][1] if self.lidar_covariances else None
@@ -491,6 +507,7 @@ class AdaptiveGuard(OdometryGuard):
             fusion_strategy="persistent_epoch_full_covariance", operating_mode=mode,
             localization_valid=bool((lidar or visual) and self.output_qualified),
             output_source=self.output_source,visual_continuity=self.visual_continuity.status(),
+            pose_source_preference=self.pose_source_preference,
             submap_id=self.submap_id,bridge_position_variance=float(self.bridge_variance[0]),
             bridge_rotation_variance=float(self.bridge_variance[1]),
             filtered_quality=self.filter_quality,

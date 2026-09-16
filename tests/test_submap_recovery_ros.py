@@ -42,7 +42,7 @@ def main():
         handle=(out/(label+'.log')).open('w')
         process=subprocess.Popen([str(ROOT/'install/t3_voxelmap/lib/t3_voxelmap/voxelmap_node'),
             '--ros-args','-p','use_sim_time:=true','-p','visual_recovery_enabled:=true',
-            '-p','voxel_size:=2.0','-p','downsample_size:=0.2','-p','max_iterations:=20',
+            '-p','voxel_size:=2.0','-p','downsample_size:=0.2','-p','max_iterations:=30',
             '-p','visual_seed_wait_sec:=0.15','-p','submap_after_failures:=3','-p','submap_confirmation_scans:=3',
             '-p','threads:=1'],stdout=handle,stderr=subprocess.STDOUT,start_new_session=True)
         spin(10.,lambda:cloud.get_subscription_count()==1)

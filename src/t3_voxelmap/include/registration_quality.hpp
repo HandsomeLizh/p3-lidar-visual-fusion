@@ -55,7 +55,8 @@ struct RegistrationQuality {
                weighted_information.allFinite();
     }
     bool reliable() const {
-        // Retained as a diagnostic, never an all-six-axis rejection switch.
+        // Full pose observability is required to promote a recovery submap.
+        // Ordinary updates retain partially observed directional constraints.
         return registration_usable() && translation_ratio() >= .02 && pose_ratio() >= .003;
     }
     M6 directional_covariance() const {

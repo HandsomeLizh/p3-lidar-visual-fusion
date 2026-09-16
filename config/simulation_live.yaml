@@ -240,6 +240,7 @@ learned_visual:
   stereo_motion_depth_ratio: 0.03
   min_stereo_motion_ratio: 0.6
   max_tracking_gap_sec: 6.0
+  max_recovery_gap_sec: 30.0
   max_speed_mps: 4.0
   max_angular_speed_rps: 2.0
   keyframe_max_age_sec: 1.0
@@ -250,8 +251,13 @@ visual_wall_timeout_sec: 6.0
 image_input_reliability: reliable
 lidar_input_reliability: reliable
 adaptive_source_selection: true
+# Simulation preference applies only after visual quality, geometry, continuity
+# and freshness checks. Invalid vision falls back to qualified LiDAR/EKF.
+pose_source_preference: visual
 visual_continuity:
   enabled: true
+  # Same epoch only: the frontend must geometrically reconnect a retained reference.
+  max_gap: 30.0
 # One qualification boundary for official visual output and LiDAR initial guesses.
 # These do not relax LiDAR residual, convergence, or motion checks.
 qualified_position_variance: 4.0
@@ -264,7 +270,7 @@ voxelmap:
   threads: 2
   voxel_size: 2.0
   downsample_size: 0.2
-  max_iterations: 20
+  max_iterations: 30
   visual_recovery_enabled: true
   submap_after_failures: 4
   submap_confirmation_scans: 3
