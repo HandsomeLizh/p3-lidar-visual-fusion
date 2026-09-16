@@ -171,3 +171,5 @@ ros2 topic echo --once /fusion/status
 进一步阅读：[文档索引](INDEX_CN.md) · [新机器环境](SETUP_CN.md) · [目录说明](DIRECTORY_CN.md)。
 
 判断整体定位先看 `localization_valid`。`vision_enabled: true` 只说明视觉观测可用；还要检查 `visual_continuity.anchored` 和 `filtered_quality.reason`。视觉重置后，不能直接把它的新原点当成旧地图原点。
+
+2026-09-16 又发现：短暂双目几何失败会立即重置视觉，后续虽恢复跟踪，却可能因缺少原地图对齐而长期不可用。**该恢复问题尚未修复**，详见 [问题记录](visual_recovery_gap_20260916.md)。
