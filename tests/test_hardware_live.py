@@ -36,23 +36,24 @@ def main():
     if any(cameras) and not all(cameras):raise RuntimeError('Only one camera publisher exists')
     if not any(cameras) and legacy:raise RuntimeError('Existing camera driver lacks compact mapping topics')
     camera_present=all(cameras)
-    rclpy.init();node=Node('p3_hardware_live_observer');counts=collections.Counter();last={};poses=[];ages=collections.defaultdict(list)
+    rclpy.init();node=Node('p3_hardware_live_observer');counts=collections.Counter();last={};poses=[];ages=collections.defaultdict(list);received_at={}
     def status(msg,key):
         counts[key]+=1
         try:last[key]=json.loads(msg.data)
         except ValueError:last[key]={'invalid_json':True}
     def receive(msg,key):
         counts[key]+=1
+        received_at[key]=time.monotonic()
         t=msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
         if len(ages[key])<4000:ages[key].append(time.time()-t)
         if key=='fused':
             p=msg.pose.pose.position;poses.append([t,p.x,p.y,p.z])
     for key,typ,topic in [('imu',Imu,'/fusion/imu'),('cloud',PointCloud2,'/fusion/lidar'),
             ('deskewed',PointCloud2,'/fusion/lidar_deskewed'),('left',Image,'/fusion/left'),('right',Image,'/fusion/right'),
-            ('fused',Odometry,'/T3/semantic/current_pose')]:
+            ('fused',Odometry,'/T3/semantic/current_pose'),('visual_pose',Odometry,'/fusion/learned_raw')]:
         node.create_subscription(typ,topic,lambda m,k=key:receive(m,k),qos_profile_sensor_data)
     node.create_subscription(GridMap,'/Car/T3/mapping/grid_map',lambda m:counts.update(['gridmap']),qos_profile_sensor_data)
-    for key,topic in [('imu_status','/fusion/imu_status'),('fusion','/fusion/status'),('hardware','/fusion/hardware_status'),('mapping','/fusion/map_status')]:
+    for key,topic in [('imu_status','/fusion/imu_status'),('fusion','/fusion/status'),('hardware','/fusion/hardware_status'),('mapping','/fusion/map_status'),('learned','/fusion/learned_status')]:
         node.create_subscription(String,topic,lambda m,k=key:status(m,k),10)
     processes=[]
     def launch(name,command):
@@ -72,10 +73,18 @@ def main():
             for line in (out/'lidar_metrics.jsonl').read_text().splitlines():
                 try:lidar.append(json.loads(line))
                 except ValueError:pass
-        passed=(counts['deskewed']>=10 and counts['fused']>=10 and counts['gridmap']>=3 and
+        idle={k:time.monotonic()-t for k,t in received_at.items()}
+        imu_seed_override=any(r.get('imu',{}).get('mode')=='imu' and r.get('visual_seed_used',False) for r in lidar)
+        lidar_passed=(counts['deskewed']>=10 and counts['fused']>=10 and counts['gridmap']>=3 and
+                idle.get('deskewed',1e9)<3. and idle.get('fused',1e9)<3. and not imu_seed_override and
                 any(r.get('imu',{}).get('mode')=='imu' for r in lidar) and pipeline.poll() is None)
-        report=dict(passed=passed,domain=domain,counts=dict(counts),last=last,
+        visual_passed=(counts['visual_pose']>=10 and idle.get('visual_pose',1e9)<3. and
+                       last.get('fusion',{}).get('visual_accepted',0)>=10)
+        passed=lidar_passed and visual_passed
+        report=dict(passed=passed,lidar_imu_mapping_passed=lidar_passed,
+            visual_pipeline_passed=visual_passed,domain=domain,counts=dict(counts),last=last,
             vehicle_commands_published=0,replay_used=False,camera_reused=camera_present,
+            message_idle_sec=idle,imu_seed_overridden_by_visual=imu_seed_override,
             message_age_sec={k:{'median':float(np.median(v)),'p95':float(np.quantile(v,.95))} for k,v in ages.items() if v},
             lidar_frames=len(lidar),lidar_valid=sum(r['valid_update'] for r in lidar),
             lidar_imu_scans=sum(r.get('imu',{}).get('mode')=='imu' for r in lidar),
