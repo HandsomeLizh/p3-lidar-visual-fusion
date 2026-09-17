@@ -237,6 +237,7 @@ class Monitor(Node):
             if ready:
                 self.render_grid(message)
                 self.global_grid_at=time.monotonic();self.global_grid_valid=True
+                self.grid_stamps['global']=message.header.stamp.sec+message.header.stamp.nanosec*1e-9
                 self.grid_display_at=self.global_grid_at
                 self.grid_source='global';return
         except (ValueError,IndexError,TypeError) as error:
@@ -253,14 +254,14 @@ class Monitor(Node):
             self.get_logger().warning('Local display grid rejected: '+str(error),throttle_duration_sec=5.)
         self.local_grid_message=message if ready else None
         self.local_grid_at=time.monotonic() if ready else 0.
+        if ready:self.grid_stamps['local']=message.header.stamp.sec+message.header.stamp.nanosec*1e-9
         if not self.global_grid_valid:self.show_local_grid()
 
     def grid_ordered(self,message,source):
         if not message.layers:return True  # Explicit invalidation may have no stamp.
         stamp=message.header.stamp.sec+message.header.stamp.nanosec*1e-9
-        if stamp<self.grid_stamps.get(source,-float('inf')):return False
-        self.grid_stamps[source]=stamp
-        return True
+        # Only a fully validated payload may advance the source watermark.
+        return stamp>=self.grid_stamps.get(source,-float('inf'))
 
     @staticmethod
     def grid_payload_ready(message,limit=1000000):
@@ -300,6 +301,7 @@ class Monitor(Node):
             if self.grid is not None and time.monotonic()-self.grid_display_at<=self.retain_stale_grid_sec:
                 self.grid_source='stale';self.goal_requested=None;return
             self.elevation_data=None;self.obstacle_data=None;self.grid=None
+            self.last_color_key=None
             self.last_grid_token=None;self.grid_source='none'
             self.goal_requested=None
 
@@ -307,6 +309,7 @@ class Monitor(Node):
         if 'elevation' not in message.layers or message.outer_start_index or message.inner_start_index:
             with self.lock:
                 self.elevation_data=None;self.obstacle_data=None;self.grid=None
+                self.last_color_key=None
                 self.last_grid_token=None
             return
         layer = message.data[list(message.layers).index('elevation')]
@@ -324,6 +327,7 @@ class Monitor(Node):
         if not valid.any():
             with self.lock:
                 self.elevation_data=None;self.obstacle_data=None;self.grid=None
+                self.last_color_key=None
                 self.last_grid_token=None
             return
         obstacle=np.zeros(elevation.shape,dtype=bool)
@@ -382,7 +386,7 @@ class Monitor(Node):
         if self.elevation_data is None:
             return
         color_key=(id(self.elevation_data),self.height_limits)
-        if color_key==self.last_color_key:return
+        if color_key==self.last_color_key and self.grid is not None:return
         self.last_color_key=color_key
         elevation, geometry, known = self.elevation_data
         lo, hi = self.height_limits

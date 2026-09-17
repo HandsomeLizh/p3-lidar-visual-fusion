@@ -84,7 +84,7 @@ def main():
         strikes=strikes+1 if severe else 0
         if strikes>=3:
             (out/"resource_stop.json").write_text(json.dumps(record,indent=2))
-            for name in ["capture","player","rviz","visuals","pipeline"]:
+            for name in ["viewer_transport","capture","player","rviz","visuals","pipeline"]:
                 try:stop(state,name)
                 except Exception as error:print("Resource stop failed for",name,str(error),flush=True)
             return

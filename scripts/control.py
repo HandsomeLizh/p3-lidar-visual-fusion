@@ -34,15 +34,24 @@ def spawn(s,name,args,env):
 
 def ensure_viewer_transport(state):
     """Attach the small display feed to this run without restarting mapping."""
-    if alive(state['processes'].get('viewer_transport')):
-        return
     if not alive(state['processes'].get('pipeline')):
         raise RuntimeError('Mapping must be running before display transport')
     env=dict(os.environ, ROS_DOMAIN_ID=str(state['domain']),
              ROS_LOCALHOST_ONLY=str(state['localhost_only']),
              CYCLONEDDS_URI=state['cyclonedds_uri'])
-    spawn(state,'viewer_transport',['/usr/bin/python3',str(ROOT/'scripts/viewer_transport.py'),
-                                  '--run-state',str(STATE)],env)
+    if not alive(state['processes'].get('viewer_transport')):
+        spawn(state,'viewer_transport',['/usr/bin/python3',str(ROOT/'scripts/viewer_transport.py'),
+                                      '--run-state',str(STATE)],env)
+    record=state['processes']['viewer_transport']
+    deadline=time.monotonic()+8.
+    while alive(record) and time.monotonic()<deadline:
+        try:
+            status=json.loads((Path(state['output'])/'viewer_transport_status.json').read_text())
+            if (status.get('ready') and status.get('pid')==record['pid']
+                    and 0<=time.time()-status.get('updated_at',0)<3.):return
+        except (OSError,ValueError):pass
+        time.sleep(.1)
+    raise RuntimeError('Mapping remains active; display transport did not become ready. See '+record['log'])
 
 
 def stop(s,name):

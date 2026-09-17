@@ -27,7 +27,10 @@ def test_reuse_never_stops_or_restarts_map(tmp_path, monkeypatch,source):
     setup_state(tmp_path, monkeypatch, ['pipeline', 'monitor', 'rviz'],source=source)
     monkeypatch.setattr(entry, 'stop', lambda *_: pytest.fail('Existing map was stopped'))
     monkeypatch.setattr(entry.subprocess, 'run', lambda *_args, **_kwargs: pytest.fail('Unexpected new process'))
+    attached=[]
+    monkeypatch.setattr(entry,'ensure_viewer_transport',lambda state:attached.append(state['output']))
     entry.main()
+    assert attached==[str(tmp_path/'old_map')]
 
 
 @pytest.mark.parametrize('domain,source', [('75', 'stereo'), ('59', 'unexpected')])

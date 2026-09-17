@@ -1,5 +1,5 @@
 """Exercise the actual display sender/receiver on an isolated ROS domain."""
-import io
+import copy
 import json
 import os
 import sys
@@ -87,11 +87,23 @@ def main():
         assert monitor.grid_source=='local' and monitor.grid_is_fresh()
         global_pub.publish(message);drain()
         assert monitor.grid_source=='global' and monitor.grid_is_fresh()
+        # Malformed future messages must not poison the valid stamp watermark.
+        bad=copy.deepcopy(message);bad.header.stamp.sec=10000;bad.data[0].data.pop()
+        monitor.on_grid(bad)
+        assert monitor.grid_stamps['global']==100
+        global_pub.publish(message);drain()
+        assert monitor.grid_source=='global' and monitor.grid[2]==400
         monitor.global_grid_at-=40.; monitor.local_grid_at-=40.; monitor.grid_display_at-=40.
         monitor.check_grid_freshness();assert monitor.grid is None and monitor.grid_source=='none'
+        assert monitor.last_color_key is None
+        global_pub.publish(message);drain()
+        assert monitor.grid is not None and monitor.grid[2]==400
+        # A discarded bitmap must be recreated even if its color key is unchanged.
+        monitor.grid=None;monitor.recolor_grid();assert monitor.grid is not None
         report=dict(passed=True,raw_display_bytes=raw_bytes,wire_bytes=len(packed.data),
                     exact_height_and_obstacle_values=True,known_cells=400,
                     stale_map_visible_with_goals_blocked=True,recovery=True,
+                    rejected_message_does_not_poison_time=True,repaint_after_cache_clear=True,
                     preview_size=[320,240],goal_messages_published=0,vehicle_commands_published=0)
         print(json.dumps(report,indent=2))
     finally:

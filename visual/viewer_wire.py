@@ -14,6 +14,8 @@ MAX_WIRE_BYTES = 16 * 1024 * 1024
 def encode_grid(message):
     # Keep every layer used by the viewer, including goal/obstacle checks.
     # The original full GridMap for planners is never changed.
+    if len(message.layers)!=len(message.data) or len(set(message.layers))!=len(message.layers):
+        raise ValueError('Malformed display grid layers')
     view = GridMap(header=message.header, info=message.info,
                    outer_start_index=message.outer_start_index,
                    inner_start_index=message.inner_start_index)
@@ -22,6 +24,8 @@ def encode_grid(message):
     view.layers = [message.layers[i] for i in indices]
     view.basic_layers = [name for name in message.basic_layers if name in view.layers]
     view.data = [message.data[i] for i in indices]
+    if sum(len(layer.data)*4 for layer in view.data) > MAX_RAW_BYTES-65536:
+        raise ValueError('Display grid exceeds decoded byte limit')
     raw = serialize_message(view)
     if len(raw) > MAX_RAW_BYTES:
         raise ValueError('Display grid exceeds decoded byte limit')

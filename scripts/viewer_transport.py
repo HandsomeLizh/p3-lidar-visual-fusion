@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,7 +26,8 @@ class ViewerTransport(Node):
     def __init__(self, status_file=None):
         super().__init__('viewer_transport', namespace='/viewer104_transport')
         self.status_file = status_file
-        self.stats = {}
+        self.stats = dict(ready=True, protocol=1, pid=os.getpid())
+        self.status_at = 0.
         self.image_at = {}
         self.pending = {}
         retained = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
@@ -41,7 +43,7 @@ class ViewerTransport(Node):
             self.image_pubs[side] = self.create_publisher(CompressedImage, PREFIX+'/'+side+'/compressed', live)
             self.create_subscription(Image, '/fusion/'+side, lambda msg, s=side: self.preview(s, msg), live)
         # At most one pending message per source; never build a catch-up queue.
-        self.create_timer(.5, self.flush)
+        self.create_timer(.1, self.flush)
         self.get_logger().info('Compressed display transport ready')
 
     def preview(self, side, msg):
@@ -81,9 +83,14 @@ class ViewerTransport(Node):
                     messages=self.stats.get(key, {}).get('messages', 0)+1, receipt=time.time())
             except (ValueError, IndexError, TypeError) as error:
                 self.get_logger().warning('Display grid rejected: '+str(error), throttle_duration_sec=5.)
-        if self.status_file:
-            tmp = self.status_file.with_suffix('.tmp')
-            tmp.write_text(json.dumps(self.stats, indent=2)); tmp.replace(self.status_file)
+        if self.status_file and time.monotonic()-self.status_at>=1.:
+            self.status_at=time.monotonic()
+            try:
+                self.stats['updated_at']=time.time()
+                tmp = self.status_file.with_suffix('.tmp')
+                tmp.write_text(json.dumps(self.stats, indent=2)); tmp.replace(self.status_file)
+            except OSError as error:
+                self.get_logger().warning('Display status could not be saved: '+str(error), throttle_duration_sec=5.)
 
 
 def main():
