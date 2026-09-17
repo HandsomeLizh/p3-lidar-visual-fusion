@@ -472,7 +472,11 @@ class TerrainMapper(Node):
                             tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
                     if sample is None:raise ValueError("Missing pose during LiDAR scan")
                     points[use]=base[use]@sample[:3,:3].T+sample[:3,3]
+            ground_support=None
             if name=='lidar' and self.mapping_view is not None:
+                # Fit supporting ground from the same body-filtered scan before
+                # cropping; only the retained view points may enter either map.
+                ground_support=points
                 keep=self.mapping_view.select(points,pose)
                 self.stats['lidar_camera_view']=dict(input_points=len(points),kept_points=int(keep.sum()))
                 points,base,xyz=points[keep],base[keep],xyz[keep]
@@ -480,7 +484,8 @@ class TerrainMapper(Node):
             stage_started=time.monotonic()
             stages={'transform':stage_started-process_started}
             sensor_origin=(pose@t_base_sensor)[:3,3]
-            terrain_indices=self.ground_clearance.select(points,sensor_origin,stamp=stamp)
+            terrain_indices=self.ground_clearance.select(points,sensor_origin,stamp=stamp,
+                                                         support_points=ground_support)
             terrain_points=points[terrain_indices];terrain_base=base[terrain_indices]
             self.stats['ground_clearance']=dict(self.ground_clearance.stats)
             if self.grid.temporal_elevation and quality is None:

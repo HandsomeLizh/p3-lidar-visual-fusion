@@ -20,16 +20,26 @@ class GroundClearance:
         self.reference=None;self.reference_max_age=reference_max_age_sec
         self.reference_max_distance=reference_max_distance_m
 
-    def select(self, points, sensor_origin,stamp=None):
+    def select(self, points, sensor_origin,stamp=None,*,support_points=None):
+        """Select only input points, using optional uncropped observed ground.
+
+        A camera-view crop can remove the nearby ground needed for fitting.
+        Separate support points may establish the plane but never add cells.
+        Both inputs must already exclude the vehicle and share a map frame.
+        """
         points=np.asarray(points,dtype=float).reshape(-1,3)
         if not self.enabled:return np.arange(len(points))
         self.plane=None
         local=points-np.asarray(sensor_origin)
         radius=np.linalg.norm(local[:,:2],axis=1)
-        near=(radius>=.6)&(radius<=self.fit_radius)&(local[:,2]<-.12)&(local[:,2]>-1.5)
-        sample=local[near]
+        support=local if support_points is None else (
+            np.asarray(support_points,dtype=float).reshape(-1,3)-np.asarray(sensor_origin))
+        support_radius=radius if support_points is None else np.linalg.norm(support[:,:2],axis=1)
+        near=(support_radius>=.6)&(support_radius<=self.fit_radius)&(support[:,2]<-.12)&(support[:,2]>-1.5)
+        sample=support[near]
         if len(sample)>1200:sample=sample[np.linspace(0,len(sample)-1,1200,dtype=int)]
-        self.stats=dict(input_points=len(points),ground_candidates=len(sample),selected_points=0,
+        self.stats=dict(input_points=len(points),ground_support_points=len(support),
+                        ground_candidates=len(sample),selected_points=0,
                         reason='ground_unobserved')
         if len(sample)<50:return np.empty(0,dtype=int)
         design=np.c_[sample[:,:2],np.ones(len(sample))]
