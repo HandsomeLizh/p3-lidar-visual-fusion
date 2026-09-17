@@ -8,6 +8,8 @@
 
 两台开机并处于可互通的局域网。在 237 桌面先双击 **“01 启动104传感器采集”**，成功后再双击 **“02 启动104建图并显示”**。237→104 已配置专用 SSH 密钥，无需输入 SSH 密码。
 
+刚上电时雷达需要初始化，建议等约 20 秒再启动建图；若提示传感器未就绪，稍后重新执行建图入口。当前三维点大小为 1.5 像素，已保存在配置中。
+
 也可以在 **237 的桌面终端**执行：
 
 ```bash
@@ -89,7 +91,7 @@ cd /home/yanfa/P3/lidar_visual_fusion
 
 - ROS_DOMAIN_ID：59。
 - LiDAR 累积点云：`/T3/mapping/lidar_map`；双目补点：`/T3/mapping/stereo_map`，窗口合并显示。
-- 局部高程图：`/Car/T3/mapping/grid_map`，车周围 32×32 米，约每秒更新。
+- 局部高程图：`/Car/T3/mapping/grid_map`，车周围 64×64 米，约每秒更新；右侧显示只看 32×32 米。
 - 全局高程图：`/Car/T3/mapping/global_grid_map`，约每 2 秒更新。
 - 正式定位：`/T3/semantic/current_pose`。
 - 当前运行目录可用 `./status.sh` 查看；日志、地图、统计保存在对应 `results/run_日期_时间/`。

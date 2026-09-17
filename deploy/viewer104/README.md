@@ -31,6 +31,7 @@ cd /home/yanfa/P3/viewer104
 - 内部显示点云 `/viewer104_237/rviz_cloud`、标记 `/viewer104_237/markers`，节点位于 `/viewer104_237`；RViz 配置、运行目录、锁和进程记录都在本目录。
 - 104 原始地图与位姿话题保持现有接口。点云为 `/T3/mapping/lidar_map`＋`/T3/mapping/stereo_map`，局部/全局高程分别为 `/Car/T3/mapping/grid_map`、`/Car/T3/mapping/global_grid_map`。外发局部图 64×64 米，右侧跟车视野 32×32 米。
 - 专用 DDS 配置采用 1400 字节 UDP 包、1280 字节 DDS 分片，接收缓冲请求 10 MiB。237 的 `net.core.rmem_max` 已配置为 10485760；系统持久设置在 `/etc/sysctl.d/90-p3-viewer104-receive.conf`。
+- RViz 点大小为 1.5 像素，保存在 `config/p3_visual_window.rviz`。104 建图程序也使用专用小包传输配置，避免相机数据分片重传影响地图接收。
 - 操作者设置的 P4 目标点发到域 59 的 `/Car/T4/rviz_goal`，只用于 104 配套规划。
 - 启动入口会覆盖继承的其他项目 ROS 域、网络配置和显示运行目录。
 
