@@ -106,7 +106,7 @@ def main():
                 else:continue
                 points=np.c_[np.linspace(4.,10.,40),np.ones(40),np.zeros(40)]
                 obs=surface_observations(points,.2,cov,[0.,0.,0.],base['elevation_fusion'])
-                values.append(dict(stamp=t,rotation_variance=float(cov[3,3]),height_accepted=sum(o[3]<=.25**2 for o in obs),cells=len(obs)))
+                values.append(dict(stamp=t,rotation_variance=float(cov[3,3]),height_accepted=int(sum(o[3]<=.25**2 for o in obs)),cells=len(obs)))
             result[mode]=dict(samples=values,acceptance=sum(v['height_accepted'] for v in values)/max(1,sum(v['cells'] for v in values)))
         result['queue']=queue.status();result['scope']='Synthetic delayed sensor inputs, actual robot_localization EKFs, original height uncertainty limit; no ATE claim.'
         (out/'report.json').write_text(json.dumps(result,indent=2))
