@@ -35,7 +35,7 @@ def ground_regression(root, poses, raw_poses):
             for transform in transforms[::8]:
                 grid.update_elevation_only(points_map=cloud@transform[:3,:3].T+transform[:3,3])
             m=grid.extract_window(center_x=0.,center_y=0.,length_x=10.,length_y=10.)
-            layers,_=TerrainMapper.terrain_layers(SimpleNamespace(cfg={'map_resolution':.2}),m)
+            layers,_=TerrainMapper.terrain_layers(SimpleNamespace(cfg={'map_resolution':.2},height_only=False),m)
             yy,xx=np.indices(m.elevation.shape)
             x=m.geometry.origin_x+(xx+.5)*.2;y=m.geometry.origin_y+(yy+.5)*.2
             flat=(np.hypot(x,y)>2.)&(np.hypot(x,y)<4.5)&((x-2.25)**2+(y-1.25)**2>.8**2)
