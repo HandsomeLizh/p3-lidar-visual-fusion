@@ -54,7 +54,7 @@ def main():
             'confirmation_frames':2,'confirmation_timeout_sec':5.,'pending_cells':4096,
             'variance_floor_m2':.0025,'max_position_variance':.04,'max_rotation_variance':.01,
             'preview_points':20000},
-        hardware={'enabled':True,'source_domain':19,'max_lidar_hz':5.,
+        hardware={'enabled':True,'source_domain':19,'max_lidar_hz':5.,'split_inertial':True,
             'clock_reference_topic':'/P3/hardware/clock_reference',
             'lidar_topic':'/Car/T5/OS1/points','imu_topic':'/Car/T5/OS1/imu',
             'left_topic':'/Car/T5/Cam_Left/image_mono/mapping',

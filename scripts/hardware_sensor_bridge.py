@@ -37,7 +37,7 @@ def set_stamp(msg,stamp):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--profile',required=True);parser.add_argument('--output',required=True)
-    parser.add_argument('--stream',choices=['inertial','stereo'],default='inertial')
+    parser.add_argument('--stream',choices=['inertial','imu','lidar','stereo'],default='inertial')
     args=parser.parse_args();profile=yaml.safe_load(Path(args.profile).read_text());cfg=profile['hardware']
     out=Path(args.output);out.mkdir(parents=True,exist_ok=True)
     domains=[int(cfg['source_domain']),int(os.environ.get('ROS_DOMAIN_ID','57'))]
@@ -48,15 +48,26 @@ def main():
     source,target=nodes
     clock=SharedSensorClock(**cfg.get('clock',{}));clock_lock=threading.Lock()
     counts=Counter();last={};arrivals={};rejections={}
-    keys=('imu','lidar') if args.stream=='inertial' else ('left','right')
+    keys={'inertial':('imu','lidar'),'imu':('imu',),'lidar':('lidar',),'stereo':('left','right')}[args.stream]
     normalizer=StereoNormalizer(profile) if args.stream=='stereo' else None
     pubs={key:target.create_publisher(typ,topic,QoSProfile(depth=200 if key=='imu' else 2,reliability=ReliabilityPolicy.RELIABLE))
           for key,typ,topic in [('left',Image,'/fusion/left'),('right',Image,'/fusion/right'),
               ('lidar',PointCloud2,profile['lidar_topic']),('imu',Imu,profile['imu_topic'])] if key in keys}
-    status_name='hardware_status' if args.stream=='inertial' else 'hardware_stereo_status'
+    status_name={'inertial':'hardware_status','lidar':'hardware_status',
+                 'imu':'hardware_imu_status','stereo':'hardware_stereo_status'}[args.stream]
     status_pub=target.create_publisher(String,'/fusion/'+status_name,2)
     stopping=threading.Event();fatal=[];groups=[];subs=[]
     clock_reference=cfg.get('clock_reference_topic')
+    imu_state={}
+    def shared_clock(now):
+        nonlocal imu_state
+        try:state=json.loads((out/'hardware_imu_status.json').read_text())
+        except FileNotFoundError:return False
+        if abs(now-float(state.get('report_wall_time',0.)))>2.:
+            raise ValueError('Shared IMU clock status is stale')
+        with clock_lock:ready=clock.adopt(state['clock'])
+        imu_state=state
+        return ready
     def observe_clock(msg):
         try:
             if len(msg.data)!=2:raise ValueError('Malformed clock reference')
@@ -65,7 +76,7 @@ def main():
         except ValueError as error:
             counts['clock_reference_rejected']+=1
             if clock.failure:fatal.append(str(error));stopping.set()
-    if args.stream=='inertial' and clock_reference:
+    if args.stream in ('inertial','imu') and clock_reference:
         group=MutuallyExclusiveCallbackGroup();groups.append(group)
         subs.append(source.create_subscription(Float64MultiArray,clock_reference,observe_clock,
             QoSProfile(depth=50,reliability=ReliabilityPolicy.RELIABLE),callback_group=group))
@@ -77,9 +88,11 @@ def main():
         try:
             if key in ('imu','lidar'):
                 if msg.header.frame_id!=profile[key+'_input_frame']:raise ValueError('Unexpected '+key+' frame '+msg.header.frame_id)
+                if args.stream=='lidar' and not shared_clock(now):
+                    counts['lidar_clock_warmup']+=1;return
                 with clock_lock:
                     mapped=clock.observe_imu(stamp,now) if key=='imu' and not clock_reference else clock.convert(stamp,now)
-                if clock_reference and now-arrivals.get('clock_reference',now)>1.:
+                if args.stream!='lidar' and clock_reference and now-arrivals.get('clock_reference',now)>1.:
                     raise ValueError('Clock reference is stale')
                 if mapped is None:counts[key+'_clock_warmup']+=1;return
                 if key=='lidar':
@@ -107,22 +120,31 @@ def main():
         if key not in keys:continue
         group=MutuallyExclusiveCallbackGroup();groups.append(group)
         topic=cfg[key+'_topic']
-        qos=QoSProfile(depth=50 if key=='imu' else 2,reliability=ReliabilityPolicy.BEST_EFFORT)
+        qos=QoSProfile(depth=400 if key=='imu' else 2,reliability=ReliabilityPolicy.BEST_EFFORT)
         subs.append(source.create_subscription(typ,topic,lambda m,k=key:receive(k,m),qos,callback_group=group))
-    # Separate processes prevent raw stereo deserialization from holding the
-    # Python GIL while a 100 Hz inertial packet waits for its callback.
+    # In split mode the IMU worker never deserializes a multi-MB PointCloud2.
+    # LiDAR adopts its clock estimate from the atomic per-run status file.
     executor=MultiThreadedExecutor(num_threads=2,context=contexts[0]);executor.add_node(source)
     thread=threading.Thread(target=executor.spin,daemon=True);thread.start()
     for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,lambda *_:stopping.set())
     def report():
         with clock_lock:clock_status=clock.status()
         value=dict(source_domain=domains[0],target_domain=domains[1],stream=args.stream,counts=dict(counts),
+                   report_wall_time=time.time(),
                    last_rejections=dict(rejections),
                    sensor_idle_seconds={k:time.time()-v for k,v in list(arrivals.items())},vehicle_commands_published=0,
                    raw_source_topics={k:cfg[k+'_topic'] for k in keys})
-        if args.stream=='inertial':
+        if args.stream!='stereo':
             clock_status['reference']='local_driver_dds_publication' if clock_reference else 'python_reception'
             value['clock']=clock_status
+        if args.stream=='lidar':
+            value['split_inertial_workers']=True
+            value['counts'].update(imu_state.get('counts',{}))
+            value['raw_source_topics'].update(imu_state.get('raw_source_topics',{}))
+            value['imu_status_age_sec']=time.time()-imu_state.get('report_wall_time',0.)
+            value['last_rejections'].update(imu_state.get('last_rejections',{}))
+            value['sensor_idle_seconds'].update({k:age+value['imu_status_age_sec']
+                for k,age in imu_state.get('sensor_idle_seconds',{}).items()})
         payload=json.dumps(value,indent=2);tmp=out/(status_name+'.json.tmp');tmp.write_text(payload);tmp.replace(out/(status_name+'.json'))
         status_pub.publish(String(data=payload))
     print('Real sensor bridge ready: domains',domains,flush=True)

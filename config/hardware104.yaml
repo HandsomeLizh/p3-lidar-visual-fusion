@@ -388,6 +388,7 @@ distortion_right:
 - -0.00037197340883430533
 - 0.12195486246369425
 hardware:
+  split_inertial: true
   enabled: true
   source_domain: 19
   max_lidar_hz: 5.0

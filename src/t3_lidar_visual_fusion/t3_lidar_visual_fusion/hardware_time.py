@@ -53,6 +53,21 @@ class SharedSensorClock:
             raise ValueError("Stale/future hardware measurement")
         return mapped
 
+    def adopt(self, status):
+        """Use the IMU worker's frozen estimate without fitting a second clock."""
+        if self.failure:raise ValueError(self.failure)
+        if status.get('failure'):
+            self.failure=str(status['failure']);raise ValueError(self.failure)
+        if not status.get('ready'):return False
+        offset=status.get('offset_seconds')
+        if status.get('mode')!=self.mode or not isinstance(offset,(int,float)) or not math.isfinite(offset):
+            raise ValueError('Invalid shared hardware clock estimate')
+        if self.offset is not None and offset!=self.offset:
+            self.failure='Shared hardware clock changed; restart mapping with a new time base'
+            raise ValueError(self.failure)
+        self.offset=float(offset);self.jitter=status.get('reception_jitter_seconds')
+        return True
+
     def status(self):
         return dict(mode=self.mode,ready=self.offset is not None and self.failure is None,
                     offset_seconds=self.offset,reception_jitter_seconds=self.jitter,

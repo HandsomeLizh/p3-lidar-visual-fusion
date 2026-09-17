@@ -74,7 +74,8 @@ def nodes(context):
             n.append(Node(package='t3_voxelmap',executable='hardware_clock_reference',
                 parameters=[{'imu_topic':hardware['imu_topic'],'output_topic':hardware['clock_reference_topic']}],
                 additional_env={'ROS_DOMAIN_ID':str(hardware['source_domain'])},output='screen'))
-        for stream in ('inertial','stereo'):
+        streams=('imu','lidar','stereo') if hardware.get('split_inertial',False) else ('inertial','stereo')
+        for stream in streams:
             bridge=ExecuteProcess(cmd=['/usr/bin/python3',str(ROOT/'scripts/hardware_sensor_bridge.py'),
                 '--profile',str(profile),'--output',str(out),'--stream',stream],output='screen')
             n.append(bridge)

@@ -44,5 +44,21 @@ class ClockTests(unittest.TestCase):
         c=SharedSensorClock(mode='system')
         self.assertEqual(c.observe_imu(1700000000.,1700000000.001),1700000000.)
 
+    def test_separate_lidar_worker_uses_exactly_the_imu_clock(self):
+        imu=self.ready();lidar=SharedSensorClock()
+        self.assertFalse(lidar.adopt(SharedSensorClock().status()))
+        self.assertTrue(lidar.adopt(imu.status()))
+        for stamp in [101.31,101.32,101.5]:
+            self.assertEqual(lidar.convert(stamp,1700000101.55),imu.convert(stamp,1700000101.55))
+        changed=imu.status();changed['offset_seconds']+=.001
+        with self.assertRaisesRegex(ValueError,'changed'):lidar.adopt(changed)
+        with self.assertRaises(ValueError):lidar.convert(101.6,1700000101.65)
+
+    def test_source_clock_failure_propagates_to_lidar(self):
+        imu=self.ready();lidar=SharedSensorClock();lidar.adopt(imu.status())
+        failure=dict(imu.status(),ready=False,failure='Sensor clock reset')
+        with self.assertRaisesRegex(ValueError,'reset'):lidar.adopt(failure)
+        self.assertFalse(lidar.status()['ready'])
+
 
 if __name__=='__main__':unittest.main()
