@@ -19,6 +19,7 @@ from .body_motion import BodyMotion
 from .visual_continuity import VisualContinuity
 from .stationary import StationaryDetector
 from .output_continuity import OutputContinuity
+from .measurement_order import VisualConstraintQueue
 from .odometry_guard import OdometryGuard
 from .ros_utils import stamp_sec, transform_from_pose, set_pose, cloud_arrays
 from sensor_msgs.msg import PointCloud2
@@ -74,6 +75,11 @@ class AdaptiveGuard(OdometryGuard):
         self.last_filtered_covariance = None
         self.filter_quality = {"reason": "waiting_for_filter"}
         self.last_lidar_usable_wall = 0.; self.last_visual_usable_wall = 0.
+        self.ekf_visual_queue = VisualConstraintQueue(self.cfg.get('ekf_visual_sync_wait_sec', 0.))
+        self.ekf_measurement_time_only = self.cfg.get('ekf_measurement_time_only', False)
+        self.last_ekf_input_stamp = -1.
+        self.ekf_predictions_ignored = 0
+        self.create_timer(.02, self.flush_ekf_visual)
         self.visual_constraints = 0; self.lidar_constraints = 0
         self.visual_anchors = 0; self.lidar_anchors = 0
         self.adaptive_rejections = {"lidar_geometry": 0, "visual_geometry": 0,
@@ -171,9 +177,20 @@ class AdaptiveGuard(OdometryGuard):
     def close_vision(self, reason):
         if self.stationary is not None:self.stationary.invalidate(reason)
         self.visual_usable = False
+        if hasattr(self, 'ekf_visual_queue'):self.ekf_visual_queue.clear()
         if hasattr(self, "visual_motion"):
             self.visual_motion.reset()
         return super().close_vision(reason)
+
+    def flush_ekf_visual(self):
+        # LiDAR registration often arrives after a newer visual increment.
+        # Keep the EKF at the LiDAR measurement time while it is healthy;
+        # otherwise the mapper only sees a later, propagated covariance.
+        # A bounded wait and the independent visual fallback prevent starvation.
+        frontier = self.lio_poses.samples[-1][0] if self.lio_poses.samples else -1.
+        for msg in self.ekf_visual_queue.ready(frontier, time.monotonic(), self.active_sources()[0]):
+            self.last_ekf_input_stamp = max(self.last_ekf_input_stamp, stamp_sec(msg))
+            self.vision_pub.publish(msg); self.vision_legacy_pub.publish(msg)
 
     def lidar_reference_covariance_at(self, stamp):
         if not self.lidar_covariances:
@@ -227,9 +244,11 @@ class AdaptiveGuard(OdometryGuard):
             out = copy.deepcopy(msg); out.header.frame_id = "odom"
             set_pose(out.pose.pose, result.transform)
             out.pose.covariance = rotate_covariance(covariance, np.eye(3), self.lidar_floor).reshape(-1).tolist()
+            self.last_ekf_input_stamp = max(self.last_ekf_input_stamp, stamp)
             self.lio_pub.publish(out); self.counters["lio"] += 1
             self.lidar_usable = True; self.last_lidar_usable_wall = time.monotonic()
             self.lidar_constraints += 1
+            self.flush_ekf_visual()
             self.process_visual()
         except ValueError as error:
             self.lidar_covariance_reliable = False; self.lidar_usable = False
@@ -371,7 +390,8 @@ class AdaptiveGuard(OdometryGuard):
                 set_pose(out.pose.pose, result.transform)
                 out.pose.covariance = rotate_covariance(covariance, self.gate.alignment[:3, :3],
                     floor/max(.1, self.quality_weight)**2).reshape(-1).tolist()
-            self.vision_pub.publish(out); self.vision_legacy_pub.publish(out)
+            self.ekf_visual_queue.append(stamp, time.monotonic(), out)
+            self.flush_ekf_visual()
             self.last_vins_wall = time.monotonic(); self.last_visual_usable_wall = self.last_vins_wall
             self.counters["vins_accepted"] += 1; self.visual_constraints += 1
             self.visual_usable = True
@@ -439,6 +459,13 @@ class AdaptiveGuard(OdometryGuard):
         # A delayed older EKF callback cannot invalidate a newer qualified pose
         # or discard its fusion candidate. Source freshness is checked separately.
         if stamp_sec(msg)<self.last_filter_stamp:return
+        if (source == 'ekf' and self.ekf_measurement_time_only
+                and stamp_sec(msg) > self.last_ekf_input_stamp + 1e-6):
+            # robot_localization also predicts on sensor timeout, even with
+            # predict_to_current_time=false. Do not let that wall-time state
+            # prevent a later corrected acquisition-time pose from publication.
+            self.ekf_predictions_ignored += 1
+            return
         if source=='ekf':
             self.ekf_candidate=None
             try:
@@ -565,6 +592,9 @@ class AdaptiveGuard(OdometryGuard):
             telemetry=telemetry,
             lidar_quality=self.lidar_quality, motion_consistency=self.motion_status,
             adaptive_rejections=self.adaptive_rejections, visual_timing=self.timing_status,
+            ekf_measurement_order=dict(self.ekf_visual_queue.status(),
+                latest_input_stamp=self.last_ekf_input_stamp,
+                predictions_ignored=self.ekf_predictions_ignored),
             visual_timing_rejected=self.visual_timing_rejected,
             image_quality=[h[-1][1].dictionary() if h else None for h in self.quality])
         self.status_pub.publish(String(data=json.dumps(data)))

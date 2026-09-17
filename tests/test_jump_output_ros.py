@@ -60,8 +60,17 @@ try:
     for m,t in zip(poses,tfs):
         assert m.header==t.header
         assert m.pose.pose.position.x==t.transform.translation.x
+    guard.ekf_measurement_time_only=True
+    before=len(poses)
+    filtered.publish(message(114.,.51));spin()
+    assert len(poses)==before and guard.last_filter_stamp==112.
+    assert guard.ekf_predictions_ignored>=1
+    raw.publish(message(113.,.51));spin()
+    filtered.publish(message(113.,.51));spin()
+    assert len(poses)==len(tfs)==before+1 and guard.last_filter_stamp==113.
     result=dict(passed=True,large_jump_blocked_in_pose_and_tf=True,same_stamp_cumulative_jump_blocked=True,
-        long_gap_lidar_jump_blocked=True,nearby_recovery=True,qualified_outputs=len(poses),ekf_main_tf_disabled=True)
+        long_gap_lidar_jump_blocked=True,nearby_recovery=True,qualified_outputs=len(poses),ekf_main_tf_disabled=True,
+        idle_prediction_blocked=True,delayed_measurement_after_prediction_published=True)
     (out/'verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result))
 finally:
     ex.shutdown();guard.destroy_node();driver.destroy_node();rclpy.shutdown()

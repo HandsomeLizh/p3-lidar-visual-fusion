@@ -40,6 +40,7 @@ def main():
         source_wall_timeout=1.5,visual_reference_wait=.3,stereo_max_skew=.01,
         pose_max_gap=.6,pose_tolerance=.12,mapping_pose_settle_sec=.4,
         mapping_wait_timeout=3.,ekf_sensor_timeout=.5,
+        ekf_measurement_time_only=True,ekf_visual_sync_wait_sec=.8,
         map_window=64.,map_publish_period=1.,global_publish_period=2.,
         mapping_dds_config='config/cyclonedds_mapping104.xml',
         min_range=.7,max_range=50.,max_scan_duration=.12,

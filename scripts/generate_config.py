@@ -87,6 +87,10 @@ def generate(profile_path, output):
         # premature prediction advances EKF time past the arriving cloud pose.
         # Publish measurement-time states; do not fabricate high-rate evidence.
         ekf["sensor_timeout"]=float(p.get("ekf_sensor_timeout",max(.3,p["vision_gate"]["max_gap"])))
+        if p.get('ekf_measurement_time_only', False):
+            # Source health is handled by the guard. Keep idle wall-time
+            # prediction out of the delayed measurement history as well.
+            ekf['sensor_timeout']=max(ekf['sensor_timeout'],float(ekf['history_length']))
         ekf["permit_corrected_publication"]=True
         # Each frontend keeps one fixed transform per declared epoch. A new
         # epoch requires a reliable same-time reference; outages keep the transform.
