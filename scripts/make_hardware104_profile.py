@@ -47,7 +47,7 @@ def main():
         self_filter={'enabled':True,'min_xyz_m':[-1.47,-1.,.13],'max_xyz_m':[.53,1.,1.03]},
         mapping_source='range',
         mapping_camera_view={'enabled':True,'full_density_range_m':10.,'range_feather_m':5.,'image_feather_fraction':.15},
-        stereo_mapping={'enabled':True,'preserve_fill_xyz':True,'topic':'/fusion/stereo_points','max_hz':2.,
+        stereo_mapping={'enabled':False,'preserve_fill_xyz':True,'topic':'/fusion/stereo_points','max_hz':2.,
             'max_points':512,'min_depth_m':.5,'max_depth_m':8.,'pixel_sigma':1.,
             'max_point_std_m':.15,'max_height_std_m':.25,'voxel_size_m':.1,
             'confirmation_frames':2,'confirmation_timeout_sec':5.,'pending_cells':4096,

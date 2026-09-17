@@ -4,7 +4,7 @@
 
 此配置使用真实 Ouster 雷达及其内置 IMU、Galaxy 双目，不需要 UE 或仿真 capture。安装位置沿用 2026-08-17 标定，用户已确认未改动。
 
-**当前模式：LiDAR 扩大覆盖，双目补近处空缺，融合定位保持原方案。** `mapping_source: range`、`stereo_mapping.preserve_fill_xyz: true`。双目只补连续确认、雷达未覆盖的地形格；重叠格采用雷达高程，后续雷达覆盖时移除旧双目补点。实现及验证见 [混合补点说明](HARDWARE104_HYBRID_20260917.md)。原来的纯双目模式仍可用，改为 `mapping_source: stereo` 后以新地图启动。
+**当前模式（2026-09-17）：仅 LiDAR 点云参与三维和高程建图，视觉、LiDAR、真实 IMU 继续融合定位。** `mapping_source: range`、`stereo_mapping.enabled: false`。用户取消视觉补点后，新地图不再订阅或融合双目三维点。此前混合实验见 [历史混合补点说明](HARDWARE104_HYBRID_20260917.md)，其结果不代表当前运行模式。
 
 ## 启动
 
@@ -49,7 +49,7 @@ cd /home/yanfa/P3/lidar_visual_fusion
 | 轨迹 | `/T3/semantic/trajectory` | `nav_msgs/msg/Path` |
 | 规划局部高程栅格 | `/Car/T3/mapping/grid_map` | `grid_map_msgs/msg/GridMap` |
 | 显示全局高程栅格 | `/Car/T3/mapping/global_grid_map` | `grid_map_msgs/msg/GridMap` |
-| 双目累积三维点云 | `/T3/mapping/stereo_map` | `sensor_msgs/msg/PointCloud2` |
+| LiDAR 累积三维点云 | `/T3/mapping/lidar_map` | `sensor_msgs/msg/PointCloud2` |
 | 建图及过滤状态 | `/fusion/map_status` | `std_msgs/msg/String` |
 | 惯性／时间／融合状态 | `/fusion/imu_status`、`/fusion/hardware_status`、`/fusion/status` | `std_msgs/msg/String` |
 
@@ -75,9 +75,9 @@ python3 scripts/check_hardware.py --seconds 5
 
 本轮未进一步减少点云：一帧约 11.2～11.3 万有效点，仍按 0.2 米降采样后约 2.5 万点参与配准。0.55 秒降至约 0.02 秒是同一输入下**点云预处理**耗时的改善，不是完整定位耗时；最新完整 LiDAR 后端单帧中位数约 0.32 秒。
 
-**几何混合补点**：LiDAR 使用去畸变点云，在相机共同视野内保留，边缘外扩 15% 渐变；平面距离 10 米内保留，10～15 米逐渐稀疏。双目复用现有匹配与时序验证，每秒最多 2 帧、每帧最多 512 点；连续确认后只补雷达未覆盖的地形格。两种源分别发布真实 XYZ，窗口叠加显示，不把栅格中心伪装成三维观测。三维 LiDAR 点云可到 15 米，高程仍使用 8 米近地表范围和原有不确定性门限；64 米窗口不意味着全部已观测。视觉质量不足时暂停新增双目补点，LiDAR 可以继续建图。
+**LiDAR 建图范围**：使用去畸变点云，在相机共同视野内保留，边缘外扩 15% 渐变；平面距离 10 米内保留，10～15 米逐渐稀疏。高程继续使用 8 米近地表范围和原有不确定性门限；64 米窗口不意味着全部已观测。视觉继续辅助定位，但其三维点不进入点云图或高程栅格。关闭双目补点只消除两源叠加的高度偏差，不会自动消除雷达噪声、历史残影或真实多层结构。
 
-**自车过滤**：`self_filter` 在标定后的 `base_link` 坐标中、入图前生效。范围 X 为 −1.47～0.53 米、Y 为 −1～1 米，即相机后方约 2×2 米；Z 为 0.13～1.03 米，相机下方约 0.7 米加上方 0.2 米余量。这个较大的范围来自用户估计与记录核对，不是精确车体模型，范围内的真实物体也会被过滤。当前作用于双目点云图与高程融合；计数见 `/fusion/map_status` 的 `self_filter.sources.stereo`。
+**自车过滤**：`self_filter` 在标定后的 `base_link` 坐标中、入图前生效。范围 X 为 −1.47～0.53 米、Y 为 −1～1 米，即相机后方约 2×2 米；Z 为 0.13～1.03 米，相机下方约 0.7 米加上方 0.2 米余量。这个较大的范围来自用户估计与记录核对，不是精确车体模型，范围内的真实物体也会被过滤。当前作用于 LiDAR 点云图与高程融合；计数见 `/fusion/map_status` 的 `self_filter.sources.lidar`。
 
 正常启动脚本创建新地图后生效。旧地图里的车身点不自动清除；未观测的车底区域仍是未知，不会强行填成可行驶地面。定位端的原始点云、雷达配准和视觉定位设置保持原样。
 
