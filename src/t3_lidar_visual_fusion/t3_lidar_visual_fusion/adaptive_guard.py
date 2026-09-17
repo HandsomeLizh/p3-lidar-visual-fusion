@@ -440,8 +440,15 @@ class AdaptiveGuard(OdometryGuard):
             if filtered is not None:
                 filtered_stamp,filtered_cov=filtered
                 filtered_age=self.get_clock().now().nanoseconds/1e9-filtered_stamp
+                max_age=self.cfg.get('visual_max_age_sec',1.5)
+                # A healthy but slower LiDAR defines its own acquisition time.
+                # Do not repeatedly hand back to faster vision merely because
+                # registration latency exceeds the image freshness budget.
+                if (self.ekf_measurement_time_only and self.lio_poses.samples
+                    and abs(filtered_stamp-self.lio_poses.samples[-1][0])<=self.cfg.get('agreement_stamp_tolerance',.05)):
+                    max_age=max(max_age,self.cfg.get('mapping_wait_timeout',3.))
                 usable=(-self.cfg.get('visual_future_tolerance_sec',.1)<=filtered_age
-                    <=self.cfg.get('visual_max_age_sec',1.5)
+                    <=max_age
                     and self.visual_covariance_qualified(filtered_cov))
             self.prefer_visual_output=not usable
             return self.prefer_visual_output
@@ -456,9 +463,25 @@ class AdaptiveGuard(OdometryGuard):
         return self.prefer_visual_output
 
     def filtered(self, msg, source='ekf'):
-        # A delayed older EKF callback cannot invalidate a newer qualified pose
-        # or discard its fusion candidate. Source freshness is checked separately.
-        if stamp_sec(msg)<self.last_filter_stamp:return
+        # An older, independently checked EKF result may prove recovery while
+        # faster visual output is ahead. Retain it for source selection only;
+        # pose/TF publication must still remain monotonic.
+        if stamp_sec(msg)<self.last_filter_stamp:
+            if source=='ekf' and self.ekf_measurement_time_only and self.active_sources()[0]:
+                try:
+                    stamp=stamp_sec(msg)
+                    reference=self.lidar_reference_at(stamp)
+                    transform=transform_from_pose(msg.pose.pose)
+                    covariance=self.preserve_bridge_uncertainty(pose_covariance(msg.pose.covariance))
+                    if (reference is not None and msg.header.frame_id=='odom' and msg.child_frame_id=='base_link'
+                        and self.visual_covariance_qualified(covariance)
+                        and (self.ekf_candidate is None or stamp>=self.ekf_candidate[0])):
+                        _,distance,angle=motion(reference,transform)
+                        if (distance<=self.output_continuity.correction_translation
+                            and angle<=self.output_continuity.correction_rotation):
+                            self.ekf_candidate=(stamp,covariance)
+                except ValueError:pass
+            return
         if (source == 'ekf' and self.ekf_measurement_time_only
                 and stamp_sec(msg) > self.last_ekf_input_stamp + 1e-6):
             # robot_localization also predicts on sensor timeout, even with

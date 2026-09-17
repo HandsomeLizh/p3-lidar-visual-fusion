@@ -359,7 +359,7 @@ mapping_pose_settle_sec: 0.4
 normalized_camera_input: true
 ekf_sensor_timeout: 0.5
 ekf_measurement_time_only: true
-ekf_visual_sync_wait_sec: 0.8
+ekf_visual_sync_wait_sec: 3.0
 telemetry_motion:
   enabled: false
 stationary:
