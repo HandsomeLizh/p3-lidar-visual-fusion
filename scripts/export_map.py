@@ -18,6 +18,9 @@ def main():
     meta=json.loads((out/"map_metadata.json").read_text());p=meta["profile"]
     with sqlite3.connect("file:"+str(out/meta["cloud_database"])+"?mode=ro",uri=True) as db:
         points=db.execute("SELECT COUNT(*) FROM voxels").fetchone()[0]
+    if meta.get('stereo_fill_database'):
+        with sqlite3.connect("file:"+str(out/meta['stereo_fill_database'])+"?mode=ro",uri=True) as db:
+            points+=db.execute('SELECT COUNT(*) FROM voxels').fetchone()[0]
     with sqlite3.connect("file:"+str(out/meta["elevation_database"])+"?mode=ro",uri=True) as db:
         tile_bytes=db.execute("SELECT COALESCE(SUM(length(payload)),0) FROM tiles").fetchone()[0]
     required=points*12+tile_bytes+128*2**20+p.get("min_disk_free_gib",5.)*2**30
@@ -31,6 +34,9 @@ def main():
         print("Lossless snapshot:",result["index"],flush=True)
         n=VoxelCloudStore.export_pcd(out/meta["cloud_database"],out/"lidar_map.pcd")
         print("PCD:",n,"points",flush=True)
+        if meta.get('stereo_fill_database'):
+            n=VoxelCloudStore.export_pcd(out/meta['stereo_fill_database'],out/'stereo_fill.pcd')
+            print('Stereo fill PCD:',n,'measured points',flush=True)
         try:
             m=grid.extract_global(p.get("global_max_cells",1000000))
             if m is not None:

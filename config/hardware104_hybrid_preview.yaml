@@ -1,0 +1,14 @@
+# Overlay used by preview_hybrid_map.py; the normal hardware profile is unchanged.
+mapping_source: range
+map_window: 64.0
+mapping_camera_view:
+  enabled: true
+  full_density_range_m: 10.0
+  range_feather_m: 5.0
+  image_feather_fraction: 0.15
+stereo_mapping:
+  enabled: true
+  preserve_fill_xyz: true
+  preview_points: 20000
+# Only the 3-D LiDAR cloud extends to 15 m. Keep the existing, more conservative
+# 8 m terrain projection and stereo depth uncertainty limits.

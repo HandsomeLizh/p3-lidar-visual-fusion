@@ -19,6 +19,7 @@ def main():
     args=p.parse_args()
     assert os.environ['ROS_DOMAIN_ID']=='98' and os.environ['ROS_LOCALHOST_ONLY']=='1'
     cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
+    cfg['mapping_source']='stereo'
     cfg['learned_visual']['device']='cpu';cfg['learned_visual']['cpu_threads']=2
     cfg.update(mapping_pose_settle_sec=0.,map_publish_period=1000.,global_publish_period=1000.)
     cv2.setNumThreads(1)

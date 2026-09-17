@@ -18,6 +18,7 @@ def main():
     assert os.environ['ROS_DOMAIN_ID']=='97' and os.environ['ROS_LOCALHOST_ONLY']=='1'
     with tempfile.TemporaryDirectory(dir=ROOT/'build') as directory:
         out=Path(directory);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
+        cfg['mapping_source']='stereo'  # Retained optional mode, independent of current default.
         assert cfg['mapping_source']=='stereo' and cfg['stereo_mapping']['enabled']
         cfg.update(mapping_pose_settle_sec=0.,tile_cells=16,map_publish_period=1000.,global_publish_period=1000.)
         profile=out/'profile.yaml';profile.write_text(yaml.safe_dump(cfg))

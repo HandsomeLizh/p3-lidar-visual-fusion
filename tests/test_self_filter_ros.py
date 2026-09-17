@@ -18,6 +18,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=ROOT/'build') as temporary:
         out=Path(temporary);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
         cfg['mapping_source']='range';cfg['stereo_mapping']['enabled']=False
+        cfg['mapping_camera_view']={'enabled':False}
         cfg.update(mapping_pose_settle_sec=0.,ground_clearance={'enabled':False},
             instantaneous_cloud=False,deskew={'enabled':False},cloud_motion_compensated=False,
             tile_cells=16,map_publish_period=1000.,global_publish_period=1000.)

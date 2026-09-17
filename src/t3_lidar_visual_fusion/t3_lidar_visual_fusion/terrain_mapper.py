@@ -35,6 +35,8 @@ from .legacy.voxel_cloud_store import VoxelCloudStore
 from .stereo_mapping import StereoConfirmation
 from .ground_clearance import GroundClearance
 from .self_filter import SelfFilter
+from .stereo_fill import StereoFillStore
+from .mapping_view import MappingCameraView
 
 
 def input_locked(method):
@@ -76,6 +78,8 @@ class TerrainMapper(Node):
             raise ValueError('map_output must be terrain or elevation_only')
         self.height_only=self.cfg.get('map_output')=='elevation_only'
         self.self_filter=SelfFilter(**self.cfg.get('self_filter',{}))
+        self.mapping_view=(MappingCameraView(self.cfg)
+            if not self.stereo_only and self.cfg.get('mapping_camera_view',{}).get('enabled',False) else None)
         self.ground_clearance=GroundClearance(**self.cfg.get('ground_clearance',{}))
         self.stereo_ground=GroundClearance(**self.cfg.get('ground_clearance',{}))
         self.grid=DiskElevationMap(self.internal/"elevation_tiles.sqlite",resolution=self.cfg["map_resolution"],
@@ -102,6 +106,10 @@ class TerrainMapper(Node):
             min_xyz_m=self.self_filter.minimum.tolist() if self.self_filter.enabled else None,
             max_xyz_m=self.self_filter.maximum.tolist() if self.self_filter.enabled else None,sources={})
         self.stereo_cfg=self.cfg.get('stereo_mapping',{})
+        self.stereo_fill=(StereoFillStore(self.internal/'stereo_fill.sqlite',self.cfg['map_resolution'],
+                                         self.stereo_cfg.get('preview_points',20000))
+            if not self.stereo_only and self.stereo_cfg.get('enabled',False)
+               and self.stereo_cfg.get('preserve_fill_xyz',False) else None)
         self.stereo_confirmation=StereoConfirmation(self.cfg['map_resolution'],self.stereo_cfg)
         self.fusion_health={};self.fusion_health_wall=-float('inf')
         self.stereo_health_generation=0;self.stereo_processed_generation=0
@@ -281,6 +289,10 @@ class TerrainMapper(Node):
             stamp=stamp,
             variance_floor=self.stereo_cfg.get('variance_floor_m2',.0025),
             preview_cap=int(self.stereo_cfg.get('preview_points',20000)))
+        if self.stereo_fill is not None:
+            self.stats['stereo_fill_observations']=self.stats.get('stereo_fill_observations',0)+self.stereo_fill.update(
+                accepted,points[use],variance[use])
+            self.stats['stereo_fill_points']=self.stereo_fill.count
         self.stats['stereo_scans']+=1;self.stats['stereo_cells']+=len(accepted)
         if len(cloud_points):
             self.cloud.append(cloud_points)
@@ -460,6 +472,11 @@ class TerrainMapper(Node):
                             tolerance=self.cfg["pose_tolerance"],max_gap=self.cfg["pose_max_gap"])
                     if sample is None:raise ValueError("Missing pose during LiDAR scan")
                     points[use]=base[use]@sample[:3,:3].T+sample[:3,3]
+            if name=='lidar' and self.mapping_view is not None:
+                keep=self.mapping_view.select(points,pose)
+                self.stats['lidar_camera_view']=dict(input_points=len(points),kept_points=int(keep.sum()))
+                points,base,xyz=points[keep],base[keep],xyz[keep]
+                if not len(points):return True
             stage_started=time.monotonic()
             stages={'transform':stage_started-process_started}
             sensor_origin=(pose@t_base_sensor)[:3,3]
@@ -497,8 +514,9 @@ class TerrainMapper(Node):
             stages['cloud_store']=time.monotonic()-stage_started;stage_started=time.monotonic()
             # Bound scan-density bias while retaining min/median/max height
             # evidence for each XY cell. The existing robust map rejects outliers.
+            replaced_stereo=np.empty((0,2),dtype=np.int64)
             if self.grid.temporal_elevation:
-                self.grid.update_elevation_only(points_map=terrain_points,stamp=stamp,
+                replaced_stereo=self.grid.update_elevation_only(points_map=terrain_points,stamp=stamp,
                     covariance=quality[3],pose_origin=pose[:3,3])
                 self.stats['elevation_fusion']=dict(self.grid.fusion_stats)
                 if not self.height_only:self.add_semantics(terrain_base,terrain_points,stamp)
@@ -514,8 +532,12 @@ class TerrainMapper(Node):
                 selected=order[positions]
                 if len(selected)>self.cfg["max_elevation_points"]:
                     selected=selected[np.linspace(0,len(selected)-1,self.cfg["max_elevation_points"],dtype=int)]
-                self.grid.update_elevation_only(points_map=terrain_points[selected])
+                replaced_stereo=self.grid.update_elevation_only(points_map=terrain_points[selected])
                 if not self.height_only:self.add_semantics(terrain_base[selected],terrain_points[selected],stamp)
+            if self.stereo_fill is not None:
+                removed=self.stereo_fill.remove(replaced_stereo)
+                self.stats['stereo_fill_replaced']=self.stats.get('stereo_fill_replaced',0)+removed
+                self.stats['stereo_fill_points']=self.stereo_fill.count
             stages['elevation']=time.monotonic()-stage_started;stage_started=time.monotonic()
             if not self.height_only:self.overview.update(terrain_points)
             stages['overview']=time.monotonic()-stage_started
@@ -597,6 +619,7 @@ class TerrainMapper(Node):
             self.cloud_pub.publish(xyz_cloud(self.cloud.preview(preview_cap),self.last_header))
             if self.stereo_cloud_pub is not None:
                 self.stereo_cloud_pub.publish(xyz_cloud(
+                    self.stereo_fill.preview() if self.stereo_fill is not None else
                     np.asarray(list(self.grid.stereo_preview.values())).reshape(-1,3),self.last_header))
             if self.incremental_pub is not None:
                 inc=IncrementalSemanticMap();inc.header=copy.deepcopy(self.last_header)
@@ -731,6 +754,7 @@ class TerrainMapper(Node):
         checkpoint_started=time.monotonic()
         with self.input_lock:self.tum.flush()
         self.delivery.checkpoint(self.grid);self.cloud.checkpoint()
+        if self.stereo_fill is not None:self.stereo_fill.checkpoint()
         if rclpy.ok():
             for pub in self.revision_pubs:pub.publish(UInt64(data=self.delivery.revision))
         if not self.height_only:self.overview.save(self.internal/"overview.npz")
@@ -741,6 +765,10 @@ class TerrainMapper(Node):
             cloud_database="_internal/lidar_voxels.sqlite",profile=self.cfg,
             last_pose=self.last_pose.tolist() if self.last_pose is not None else None,
             last_stamp=stamp_sec(self.last_header) if self.last_header else None)
+        if self.stereo_fill is not None:
+            metadata['stereo_fill_database']='_internal/stereo_fill.sqlite'
+            metadata['stereo_fill_cloud_topic']='/T3/mapping/stereo_map'
+            metadata['stereo_fill_policy']='confirmed_measured_xyz_in_range_unobserved_terrain_cells'
         tmp=self.output/"map_metadata.json.tmp";tmp.write_text(json.dumps(metadata,indent=2))
         tmp.replace(self.output/"map_metadata.json")
         if self.latest_window:
@@ -795,4 +823,5 @@ def main():
         try:node.grid.close()
         except Exception as e:print("Tile checkpoint failed:",e,flush=True)
         node.delivery.close();node.cloud.close();node.tum.close();node.destroy_node()
+        if node.stereo_fill is not None:node.stereo_fill.close()
         if rclpy.ok():rclpy.shutdown()

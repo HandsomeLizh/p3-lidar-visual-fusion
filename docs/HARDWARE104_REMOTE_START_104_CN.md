@@ -2,7 +2,7 @@
 
 104 地址：`yanfa@192.168.100.104`。
 项目目录：`/home/yanfa/P3/lidar_visual_fusion`。
-新版地图仅使用双目三维点累积点云与高程；定位使用视觉、LiDAR 和真实 IMU。
+新版使用 LiDAR 扩大点云覆盖，双目补雷达未覆盖的近处地形；定位使用视觉、LiDAR 和真实 IMU。发给规划端的局部 GridMap 为以车为中心的 **64×64 米、320×320 格**；右侧显示独立跟车查看 **32×32 米**。
 
 ## 推荐：在 237 操作
 
@@ -88,7 +88,7 @@ cd /home/yanfa/P3/lidar_visual_fusion
 ## 地图与记录
 
 - ROS_DOMAIN_ID：59。
-- 双目累积点云：`/T3/mapping/stereo_map`。
+- LiDAR 累积点云：`/T3/mapping/lidar_map`；双目补点：`/T3/mapping/stereo_map`，窗口合并显示。
 - 局部高程图：`/Car/T3/mapping/grid_map`，车周围 32×32 米，约每秒更新。
 - 全局高程图：`/Car/T3/mapping/global_grid_map`，约每 2 秒更新。
 - 正式定位：`/T3/semantic/current_pose`。

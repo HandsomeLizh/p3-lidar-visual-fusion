@@ -15,6 +15,7 @@ topics={'pose':('/T3/semantic/current_pose',Odometry,qos),
  'global_grid':('/Car/T3/mapping/global_grid_map',GridMap,retained),
  'local_grid':('/Car/T3/mapping/grid_map',GridMap,retained),
  'cloud':('/T3/mapping/stereo_map',PointCloud2,retained),
+ 'lidar_cloud':('/T3/mapping/lidar_map',PointCloud2,retained),
  'left':('/fusion/left',Image,qos),'right':('/fusion/right',Image,qos),
  'display_cloud':('/viewer104_237/rviz_cloud',PointCloud2,retained)}
 def callback(key):
@@ -33,14 +34,15 @@ try:
   if key in latest:
    m=latest[key];layers=list(m.layers)
    report[key]=dict(layers=layers,known_height_cells=(int(np.isfinite(np.asarray(m.data[layers.index('elevation')].data)).sum()) if 'elevation' in layers else 0))
- for key in ['cloud','display_cloud']:
+ for key in ['cloud','lidar_cloud','display_cloud']:
   if key in latest:report[key+'_points']=latest[key].width*latest[key].height
  for key in ['left','right']:
   if key in latest:report[key+'_size']=[latest[key].width,latest[key].height,latest[key].encoding]
- required=['pose','cloud','left','right','display_cloud']
+ required=['pose','left','right','display_cloud']
  fresh=lambda k: counts[k]>=3 and time.monotonic()-last.get(k,0)<5
  usable_grid=any(fresh(k) and report.get(k,{}).get('known_height_cells',0)>0 for k in ['global_grid','local_grid'])
- report['passed']=all(fresh(k) for k in required) and usable_grid
+ usable_cloud=any(fresh(k) and report.get(k+'_points',0)>0 for k in ['cloud','lidar_cloud'])
+ report['passed']=all(fresh(k) for k in required) and usable_grid and usable_cloud
  target=Path(__file__).resolve().parent/'results/receive_check.json';target.parent.mkdir(exist_ok=True);target.write_text(json.dumps(report,indent=2));print(json.dumps(report,indent=2))
 finally:node.destroy_node();rclpy.shutdown()
 raise SystemExit(0 if report['passed'] else 1)

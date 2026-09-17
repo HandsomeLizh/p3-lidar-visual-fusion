@@ -225,11 +225,12 @@ class DiskElevationMap(TiledSemanticMapManager):
         return np.asarray(accepted,dtype=float).reshape(-1,3)
 
     def update_elevation_only(self, *, points_map,stamp=None,covariance=None,pose_origin=None):
+        replaced_stereo=[]
         if self.temporal_elevation:self.fusion_stats=dict(accepted=0,pending=0,replaced=0,rejected=0)
         points = np.asarray(points_map, dtype=np.float64).reshape(-1, 3)
         points = points[np.isfinite(points).all(axis=1)]
         if not len(points):
-            return
+            return np.empty((0,2),dtype=np.int64)
         if self.temporal_elevation:
             if stamp is None or not np.isfinite(stamp) or covariance is None or pose_origin is None:
                 raise ValueError('Temporal elevation requires stamped pose uncertainty')
@@ -250,6 +251,7 @@ class DiskElevationMap(TiledSemanticMapManager):
                 self.clear_stereo_cells(tile,rows[replace],cols[replace])
                 for cell in np.unique(np.floor(selected[replace,:2]/self.resolution).astype(np.int64),axis=0):
                     self.stereo_preview.pop(tuple(cell),None)
+                    replaced_stereo.append(cell)
             if self.temporal_elevation:
                 # Keep an existing qualified stereo surface if this range sample
                 # was too uncertain or too old to replace it.
@@ -258,6 +260,7 @@ class DiskElevationMap(TiledSemanticMapManager):
                 for name,value in stats.items():self.fusion_stats[name]+=value
             else:tile.update_elevation_only(points_map=selected)
             tile._fusion_revision = self.update_id
+        return np.asarray(replaced_stereo,dtype=np.int64).reshape(-1,2)
 
     def add_semantics(self, points, labels):
         cells = np.floor(np.asarray(points)[:, :2] / self.resolution).astype(np.int64)

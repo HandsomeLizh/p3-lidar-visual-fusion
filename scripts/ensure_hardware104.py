@@ -20,9 +20,9 @@ def inspect():
     if 'pipeline' in running:
         profile = yaml.safe_load((Path(state['output']) / 'profile.yaml').read_text())
         if (str(state.get('domain')) != '59' or str(state.get('localhost_only')) != '0'
-                or profile.get('mapping_source') != 'stereo'
+                or profile.get('mapping_source') not in ('stereo','range')
                 or not profile.get('hardware', {}).get('enabled')):
-            raise RuntimeError('104 当前运行与双目实车/域 59 配置不同；请先人工检查，未停止当前程序。')
+            raise RuntimeError('104 当前运行与实车/域 59 配置不同；请先人工检查，未停止当前程序。')
     return state, running
 
 

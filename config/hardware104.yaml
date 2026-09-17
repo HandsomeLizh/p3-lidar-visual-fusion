@@ -1,7 +1,13 @@
 name: Rover 104 real Ouster OS1-128 + internal IMU + Galaxy stereo
-mapping_source: stereo  # Geometry from stereo only; localization still uses LiDAR/IMU/vision.
+mapping_source: range  # Camera-view LiDAR geometry with confirmed stereo terrain fill.
+mapping_camera_view:
+  enabled: true
+  full_density_range_m: 10.0
+  range_feather_m: 5.0
+  image_feather_fraction: 0.15
 stereo_mapping:
   enabled: true
+  preserve_fill_xyz: true
   topic: /fusion/stereo_points
   max_hz: 2.0
   max_points: 512
@@ -185,6 +191,7 @@ cloud_voxel_size: 0.12
 cloud_preview_points: 150000
 # Planner output is 64 x 64 m (320 x 320 cells). The viewer follows a separate 32 m window.
 map_window: 64.0
+mapping_dds_config: config/cyclonedds_mapping104.xml
 map_publish_period: 1.0
 max_elevation_points: 12000
 pose_tolerance: 0.12

@@ -22,14 +22,15 @@ def setup_state(tmp_path, monkeypatch, names, domain='59', source='stereo'):
     monkeypatch.setattr(sys, 'argv', ['ensure_hardware104.py'])
 
 
-def test_reuse_never_stops_or_restarts_map(tmp_path, monkeypatch):
-    setup_state(tmp_path, monkeypatch, ['pipeline', 'monitor', 'rviz'])
+@pytest.mark.parametrize('source',['stereo','range'])
+def test_reuse_never_stops_or_restarts_map(tmp_path, monkeypatch,source):
+    setup_state(tmp_path, monkeypatch, ['pipeline', 'monitor', 'rviz'],source=source)
     monkeypatch.setattr(entry, 'stop', lambda *_: pytest.fail('Existing map was stopped'))
     monkeypatch.setattr(entry.subprocess, 'run', lambda *_args, **_kwargs: pytest.fail('Unexpected new process'))
     entry.main()
 
 
-@pytest.mark.parametrize('domain,source', [('75', 'stereo'), ('59', 'range')])
+@pytest.mark.parametrize('domain,source', [('75', 'stereo'), ('59', 'unexpected')])
 def test_incompatible_active_run_is_preserved(tmp_path, monkeypatch, domain, source):
     setup_state(tmp_path, monkeypatch, ['pipeline', 'rviz'], domain=domain, source=source)
     monkeypatch.setattr(entry, 'stop', lambda *_: pytest.fail('Incompatible run was stopped'))
