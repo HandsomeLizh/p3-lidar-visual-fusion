@@ -227,6 +227,7 @@ class Monitor(Node):
         with self.lock:
             self.elevation_data = (elevation, geometry, int(valid.sum()))
             self.obstacle_data=(obstacle,occupancy)
+            self.terrain_classification_available=('occupancy' in message.layers or 'obstacle' in message.layers)
             self.grid_frame=message.header.frame_id
             self.last_grid_token=token
         self.update_color_limits()
@@ -297,9 +298,10 @@ class Monitor(Node):
             col,row=int(math.floor((x-ox)/res)),int(math.floor((y-oy)/res))
             if not (0<=row<ny and 0<=col<nx) or not np.isfinite(elevation[row,col]):
                 self.goal_status='目标位于未观测区域，未发送';return False
-            if self.obstacle_data is None or not np.isfinite(self.obstacle_data[1][row,col]):
+            if (getattr(self,'terrain_classification_available',True) and
+                    (self.obstacle_data is None or not np.isfinite(self.obstacle_data[1][row,col]))):
                 self.goal_status='目标栅格通行性未知，未发送';return False
-            if self.obstacle_data[0][row,col]:
+            if self.obstacle_data is not None and self.obstacle_data[0][row,col]:
                 self.goal_status='目标位于黑色障碍格，未发送';return False
             self.goal_requested=(float(x),float(y),float(yaw),float(elevation[row,col]),time.monotonic())
             self.goal_status='正在发送目标到 P4'

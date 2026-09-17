@@ -60,20 +60,12 @@ def _quantize_unsigned(values: np.ndarray, scale: float) -> np.ndarray:
     return encoded
 
 
-def _tile_payload(tile) -> Tuple[float, bytes]:
+def _tile_payload(tile, *, height_only: bool = False) -> Tuple[float, bytes]:
     elevation_offset_m, elevation_cm = _quantize_elevation(
         tile.elevation_layer()
     )
     buffer = io.BytesIO()
-    np.savez(
-        buffer,
-        occupancy=tile.occupancy_int8(),
-        semantic=tile.semantic_id_layer(),
-        semantic_confidence=np.clip(
-            np.rint(tile.semantic_confidence_layer() * 255.0),
-            0,
-            255,
-        ).astype(np.uint8),
+    layers = dict(
         elevation=elevation_cm,
         elevation_variance=_quantize_unsigned(
             tile.elevation_variance_layer(), VARIANCE_SCALE_M2
@@ -88,17 +80,21 @@ def _tile_payload(tile) -> Tuple[float, bytes]:
             tile.elevation_count, 0, 65535
         ).astype(np.uint16),
     )
+    if not height_only:
+        layers.update(occupancy=tile.occupancy_int8(),semantic=tile.semantic_id_layer(),
+            semantic_confidence=np.clip(np.rint(tile.semantic_confidence_layer()*255.),0,255).astype(np.uint8))
+    np.savez(buffer,**layers)
     return elevation_offset_m, buffer.getvalue()
 
 
-def _compressed_tile_payload(tile, compression_level: int) -> Tuple[float, bytes]:
+def _compressed_tile_payload(tile, compression_level: int, *, height_only: bool = False) -> Tuple[float, bytes]:
     """Encode one immutable tile and compress it outside the SQLite thread.
 
     NumPy and zlib execute the expensive parts in native code and release the
     GIL. A thread pool therefore uses multiple CPU cores without copying tile
     arrays through multiprocessing IPC.
     """
-    offset, raw_payload = _tile_payload(tile)
+    offset, raw_payload = _tile_payload(tile, height_only=height_only)
     return offset, zlib.compress(raw_payload, int(compression_level))
 
 

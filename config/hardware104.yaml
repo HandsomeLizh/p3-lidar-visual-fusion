@@ -153,9 +153,29 @@ vision_pose_variance:
 - 0.005
 - 0.005
 map_resolution: 0.2
+map_output: elevation_only
+elevation_fusion:
+  enabled: true
+  sensor_std_m: 0.03
+  min_std_m: 0.02
+  process_variance_per_sec: 0.0004
+  max_gain: 0.25
+  gate_floor_m: 0.08
+  gate_ceiling_m: 0.20
+  max_measurement_std_m: 0.25
+  change_confirmations: 3
+  change_min_span_sec: 0.20
+  change_max_gap_sec: 1.0
+ground_clearance:
+  enabled: true
+  # Conservative terrain selection band above observed ground; not a collision model.
+  clearance_m: 1.2
+  terrain_radius_m: 8.0
+  reference_max_age_sec: 2.0
+  reference_max_distance_m: 3.0
 cloud_voxel_size: 0.12
 cloud_preview_points: 150000
-map_window: 64.0
+map_window: 32.0
 map_publish_period: 1.0
 max_elevation_points: 12000
 pose_tolerance: 0.12

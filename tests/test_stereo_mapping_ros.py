@@ -23,6 +23,7 @@ def main():
         cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
         mount=np.eye(4);mount[:3,:3]=[[0,0,1],[-1,0,0],[0,-1,0]];mount[2,3]=.8
         cfg.update(base_from_camera_left=mount.tolist(),base_from_lidar=np.eye(4).tolist(),
+            ground_clearance={'enabled':False},
             instantaneous_cloud=True,deskew={'enabled':False},mapping_lidar_topic='/fusion/lidar',
             mapping_pose_settle_sec=0.,map_window=4.,tile_cells=8,map_publish_period=100.,global_publish_period=100.)
         path=Path(directory);profile=path/'profile.yaml';profile.write_text(yaml.safe_dump(cfg))

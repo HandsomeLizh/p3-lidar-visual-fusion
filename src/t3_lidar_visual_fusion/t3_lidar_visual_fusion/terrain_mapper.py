@@ -33,6 +33,7 @@ from .legacy.dense_grid_store import LiveDenseGlobalMapWriter
 from .legacy.grid_map_message import make_grid_map_message
 from .legacy.voxel_cloud_store import VoxelCloudStore
 from .stereo_mapping import StereoConfirmation
+from .ground_clearance import GroundClearance
 
 
 def input_locked(method):
@@ -55,16 +56,22 @@ class TerrainMapper(Node):
         self.stereo_pending=deque(maxlen=2)
         self.last_processed_source=None
         self.internal=self.output/"_internal";self.internal.mkdir(exist_ok=True)
+        if self.cfg.get('map_output','terrain') not in ('terrain','elevation_only'):
+            raise ValueError('map_output must be terrain or elevation_only')
+        self.height_only=self.cfg.get('map_output')=='elevation_only'
+        self.ground_clearance=GroundClearance(**self.cfg.get('ground_clearance',{}))
+        self.stereo_ground=GroundClearance(**self.cfg.get('ground_clearance',{}))
         self.grid=DiskElevationMap(self.internal/"elevation_tiles.sqlite",resolution=self.cfg["map_resolution"],
             tile_cells=self.cfg.get("tile_cells",128),max_tiles=self.cfg.get("max_resident_tiles",64),
-            cache_mib=self.cfg.get("tile_cache_mib",128),max_window_cells=self.cfg.get("max_query_cells",250000))
+            cache_mib=self.cfg.get("tile_cache_mib",128),max_window_cells=self.cfg.get("max_query_cells",250000),
+            elevation_fusion=self.cfg.get('elevation_fusion'))
         self.cloud=BoundedCloudStore(self.internal/"lidar_voxels.sqlite",self.cfg["cloud_voxel_size"],
             self.cfg["cloud_preview_points"],self.cfg.get("preview_voxel_size",.3))
         self.cleanup=VisibilityCleanup(self.cfg.get('dynamic_map',{}))
         self.pose_quality=deque(maxlen=self.cfg.get('pose_buffer_samples',1200))
-        self.delivery=CompactDelivery(self.output/"global_grid_map.sqlite3")
+        self.delivery=CompactDelivery(self.output/"global_grid_map.sqlite3",height_only=self.height_only)
         self.overview=Overview(self.cfg.get("overview_side_cells",256),self.cfg.get("overview_resolution",1.))
-        self.dense_writer=LiveDenseGlobalMapWriter(self.output/"global_grid_map.npz",frame_id="map")
+        self.dense_writer=LiveDenseGlobalMapWriter(self.output/"global_grid_map.npz",frame_id="map",height_only=self.height_only)
         self.last_dense_revision=-1
         self.cached_global=None;self.last_global_revision=-1
         self.pressure=False;self.storage_paused=False;self.last_global_wall=0.
@@ -91,7 +98,7 @@ class TerrainMapper(Node):
         for source in self.cfg.get("tof_sources",[]):
             rigid(source["base_from_sensor"])
             self.input_node.create_subscription(PointCloud2,source["topic"],lambda m,s=source:self.enqueue(m,s["name"],s["base_from_sensor"]),qos_profile_sensor_data)
-        if self.cfg.get("semantic_topic"):
+        if self.cfg.get("semantic_topic") and not self.height_only:
             self.input_node.create_subscription(Image,self.cfg["semantic_topic"],self.semantic,1)
         qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.grid_pubs=[self.create_publisher(GridMap,t,qos) for t in
@@ -99,14 +106,14 @@ class TerrainMapper(Node):
         self.global_pubs=[self.create_publisher(GridMap,t,qos) for t in
             ["/T3/mapping/global_grid_map","/Car/T3/mapping/global_grid_map"]]
         self.overview_pubs=[self.create_publisher(OccupancyGrid,t,qos) for t in
-            ["/T3/mapping/global_overview","/Car/T3/mapping/global_overview"]]
+            ([] if self.height_only else ["/T3/mapping/global_overview","/Car/T3/mapping/global_overview"])]
         self.revision_pubs=[self.create_publisher(UInt64,t,qos) for t in
             ["/T3/mapping/global_map_revision","/Car/T3/mapping/global_map_revision"]]
         self.cloud_pub=self.create_publisher(PointCloud2,"/T3/mapping/lidar_map",qos)
         self.stereo_cloud_pub=self.create_publisher(PointCloud2,'/T3/mapping/stereo_map',qos)
         self.elevation_pub=self.create_publisher(PointCloud2,"/T3/mapping/elevation_cloud",qos)
-        self.incremental_pub=self.create_publisher(IncrementalSemanticMap,"/T3/semantic/incremental_map",qos)
-        self.occupancy_pub=self.create_publisher(OccupancyGrid,"/T3/mapping/traversability",qos)
+        self.incremental_pub=None if self.height_only else self.create_publisher(IncrementalSemanticMap,"/T3/semantic/incremental_map",qos)
+        self.occupancy_pub=None if self.height_only else self.create_publisher(OccupancyGrid,"/T3/mapping/traversability",qos)
         self.status_pub=self.create_publisher(String,"/fusion/map_status",10)
         self.create_timer(.1,self.process)
         self.create_timer(self.cfg["map_publish_period"],self.publish)
@@ -222,8 +229,19 @@ class TerrainMapper(Node):
             self.stats['stereo_rejected']+=1;self.stats['stereo_reason']='invalid_pose_covariance';return
         variance=variance+np.maximum(0.,np.einsum('ni,ij,nj->n',jacobian,covariance,jacobian))
         use=variance<=self.stereo_cfg.get('max_height_std_m',.25)**2
+        terrain=self.ground_clearance.select_from_reference(points,pose[:3,3],stamp)
+        if (self.ground_clearance.enabled
+                and not self.ground_clearance.reference_available(pose[:3,3],stamp)):
+            # Visual fallback can establish its own observed supporting surface;
+            # do not require a live LiDAR plane indefinitely.
+            terrain=self.stereo_ground.select(points,(pose@transform)[:3,3],stamp=stamp)
+        terrain_mask=np.zeros(len(points),dtype=bool);terrain_mask[terrain]=True
+        use &= terrain_mask
+        self.stats['stereo_terrain_points']=int(use.sum())
+        if not use.any():self.stereo_confirmation.clear()
         evidence=self.stereo_confirmation.observe(points[use],variance[use],stamp)
         accepted=self.grid.update_stereo(evidence,
+            stamp=stamp,
             variance_floor=self.stereo_cfg.get('variance_floor_m2',.0025),
             preview_cap=int(self.stereo_cfg.get('preview_points',20000)))
         self.stats['stereo_scans']+=1;self.stats['stereo_cells']+=len(accepted)
@@ -386,6 +404,12 @@ class TerrainMapper(Node):
                     points[use]=base[use]@sample[:3,:3].T+sample[:3,3]
             stage_started=time.monotonic()
             stages={'transform':stage_started-process_started}
+            sensor_origin=(pose@t_base_sensor)[:3,3]
+            terrain_indices=self.ground_clearance.select(points,sensor_origin,stamp=stamp)
+            terrain_points=points[terrain_indices];terrain_base=base[terrain_indices]
+            self.stats['ground_clearance']=dict(self.ground_clearance.stats)
+            if self.grid.temporal_elevation and quality is None:
+                raise ValueError('Missing co-timed pose covariance for elevation fusion')
             if name=="lidar":
                 removed=np.empty((0,3))
                 dynamic=self.cfg.get('dynamic_map',{})
@@ -406,17 +430,23 @@ class TerrainMapper(Node):
                     self.cleanup.stats=dict(checked=0,free_evidence=0,removed=0,pending=0)
                 self.cloud.append(points);self.stats["lidar_scans"]+=1
                 if len(removed):
-                    self.grid.rebuild_cells(np.floor(removed[:,:2]/self.cfg['map_resolution']).astype(int),self.cloud)
-                    self.refresh_overview(removed)
+                    self.grid.rebuild_cells(np.floor(removed[:,:2]/self.cfg['map_resolution']).astype(int),self.cloud,
+                        lambda p:self.ground_clearance.filter_columns(p,sensor_origin))
+                    if not self.height_only:self.refresh_overview(removed)
                 self.stats['cleanup']=dict(self.cleanup.stats,pose_qualified=clear_ok,
                     removed_total=self.stats.get('cleanup',{}).get('removed_total',0)+len(removed))
             else:self.stats["tof_scans"]+=1
             stages['cloud_store']=time.monotonic()-stage_started;stage_started=time.monotonic()
             # Bound scan-density bias while retaining min/median/max height
             # evidence for each XY cell. The existing robust map rejects outliers.
-            keys=np.floor(points[:,:2]/self.cfg["map_resolution"]).astype(np.int64)
-            order=np.lexsort((points[:,2],keys[:,1],keys[:,0]));ordered=keys[order]
-            if len(order):
+            if self.grid.temporal_elevation:
+                self.grid.update_elevation_only(points_map=terrain_points,stamp=stamp,
+                    covariance=quality[3],pose_origin=pose[:3,3])
+                self.stats['elevation_fusion']=dict(self.grid.fusion_stats)
+                if not self.height_only:self.add_semantics(terrain_base,terrain_points,stamp)
+            elif len(terrain_points):
+                keys=np.floor(terrain_points[:,:2]/self.cfg["map_resolution"]).astype(np.int64)
+                order=np.lexsort((terrain_points[:,2],keys[:,1],keys[:,0]));ordered=keys[order]
                 starts=np.r_[0,np.flatnonzero(np.any(np.diff(ordered,axis=0),axis=1))+1]
                 ends=np.r_[starts[1:],len(order)]
                 positions=np.column_stack([starts,starts+(ends-starts)//2,ends-1]).ravel()
@@ -426,10 +456,10 @@ class TerrainMapper(Node):
                 selected=order[positions]
                 if len(selected)>self.cfg["max_elevation_points"]:
                     selected=selected[np.linspace(0,len(selected)-1,self.cfg["max_elevation_points"],dtype=int)]
-                self.grid.update_elevation_only(points_map=points[selected])
-                self.add_semantics(base[selected],points[selected],stamp)
+                self.grid.update_elevation_only(points_map=terrain_points[selected])
+                if not self.height_only:self.add_semantics(terrain_base[selected],terrain_points[selected],stamp)
             stages['elevation']=time.monotonic()-stage_started;stage_started=time.monotonic()
-            self.overview.update(points)
+            if not self.height_only:self.overview.update(terrain_points)
             stages['overview']=time.monotonic()-stage_started
             self.advance_map_stamp(msg)
             self.dirty=True;self.stats["mapped_scans"]+=1;self.stats["map_points"]=self.cloud.count
@@ -442,6 +472,8 @@ class TerrainMapper(Node):
         return True
 
     def terrain_layers(self,m):
+        if self.height_only:
+            return m.layers(['elevation','elevation_variance','height_range','roughness','observation_count']),None
         layers=m.all_layers()
         elevation=m.elevation
         if min(elevation.shape)<2:
@@ -508,18 +540,19 @@ class TerrainMapper(Node):
             if self.stereo_cfg.get('enabled',False):
                 self.stereo_cloud_pub.publish(xyz_cloud(
                     np.asarray(list(self.grid.stereo_preview.values())).reshape(-1,3),self.last_header))
-            inc=IncrementalSemanticMap();inc.header=copy.deepcopy(self.last_header)
-            inc.update_id=self.grid.update_id%(2**32);inc.resolution=float(m.geometry.resolution)
-            inc.width=m.geometry.width;inc.height=m.geometry.height
-            inc.origin.position.x=float(m.geometry.origin_x);inc.origin.position.y=float(m.geometry.origin_y)
-            inc.origin.orientation.w=1.
-            inc.occupancy=typed(occupancy,"b");inc.semantic=typed(m.semantic,"B")
-            inc.semantic_confidence=typed(m.semantic_confidence,"f")
-            inc.elevation=typed(m.elevation,"f");inc.elevation_variance=typed(m.elevation_variance,"f")
-            inc.height_range=typed(m.height_range,"f");inc.roughness=typed(m.roughness,"f")
-            inc.observation_count=typed(m.observation_count,"I");inc.class_names=list(m.class_names)
-            self.incremental_pub.publish(inc)
-            self.occupancy_pub.publish(self.occupancy_message(m.geometry,occupancy))
+            if self.incremental_pub is not None:
+                inc=IncrementalSemanticMap();inc.header=copy.deepcopy(self.last_header)
+                inc.update_id=self.grid.update_id%(2**32);inc.resolution=float(m.geometry.resolution)
+                inc.width=m.geometry.width;inc.height=m.geometry.height
+                inc.origin.position.x=float(m.geometry.origin_x);inc.origin.position.y=float(m.geometry.origin_y)
+                inc.origin.orientation.w=1.
+                inc.occupancy=typed(occupancy,"b");inc.semantic=typed(m.semantic,"B")
+                inc.semantic_confidence=typed(m.semantic_confidence,"f")
+                inc.elevation=typed(m.elevation,"f");inc.elevation_variance=typed(m.elevation_variance,"f")
+                inc.height_range=typed(m.height_range,"f");inc.roughness=typed(m.roughness,"f")
+                inc.observation_count=typed(m.observation_count,"I");inc.class_names=list(m.class_names)
+                self.incremental_pub.publish(inc)
+                self.occupancy_pub.publish(self.occupancy_message(m.geometry,occupancy))
             self.latest_window=(m,layers)
             self.dirty=False;self.last_publish_wall=time.monotonic()
             self.tum.flush()
@@ -544,8 +577,8 @@ class TerrainMapper(Node):
             # Keep the original full-extent, original-resolution global contract.
             # Publish the contract's core layers, not visualization color copies.
             all_layers,_=self.terrain_layers(m)
-            layers={key:all_layers[key] for key in ['elevation','elevation_variance','height_range',
-                                                    'traversability','occupancy','obstacle']}
+            layers=(all_layers if self.height_only else {key:all_layers[key] for key in
+                ['elevation','elevation_variance','height_range','traversability','occupancy','obstacle']})
             grid_msg=make_grid_map_message(header=self.last_header,geometry=m.geometry,layers=layers)
             for pub in self.global_pubs:pub.publish(grid_msg)
             self.cached_global=grid_msg;self.last_global_revision=self.grid.update_id
@@ -563,7 +596,7 @@ class TerrainMapper(Node):
             for pub in self.global_pubs:pub.publish(empty)
             self.global_available=False
             self.cached_global=None;self.last_global_revision=-1
-            self.get_logger().warn(str(e)+"; use local map/query and global_overview",throttle_duration_sec=20)
+            self.get_logger().warn(str(e)+"; use local map/query",throttle_duration_sec=20)
         except (RuntimeError,OSError,sqlite3.Error) as e:
             self.get_logger().error("Global map publication failed: "+str(e),throttle_duration_sec=5)
 
@@ -623,6 +656,8 @@ class TerrainMapper(Node):
             global_published_revision=self.last_global_revision,
             dense_persisted_revision=self.dense_writer.persisted_revision,
             dense_export_error=str(self.dense_writer.last_error) if self.dense_writer.last_error else None,
+            map_output=self.cfg.get('map_output','terrain'),
+            elevation_fusion_model='temporal_upper_v1' if self.grid.temporal_elevation else 'historical_mean',
             revision=self.grid.update_id,last_map_stamp=stamp_sec(self.last_header) if self.last_header else None)
         if rclpy.ok():self.status_pub.publish(String(data=json.dumps(data)))
         try:
@@ -640,7 +675,7 @@ class TerrainMapper(Node):
         self.delivery.checkpoint(self.grid);self.cloud.checkpoint()
         if rclpy.ok():
             for pub in self.revision_pubs:pub.publish(UInt64(data=self.delivery.revision))
-        self.overview.save(self.internal/"overview.npz")
+        if not self.height_only:self.overview.save(self.internal/"overview.npz")
         metadata=dict(format="t3_fusion_disk_map_v1",frame_id="map",map_to_odom="identity",
             revision=self.grid.update_id,resolution=self.cfg["map_resolution"],tile_cells=self.grid.tile_cells,
             elevation_database="_internal/elevation_tiles.sqlite",
@@ -653,9 +688,10 @@ class TerrainMapper(Node):
             m,layers=self.latest_window
             tmp=self.output/"local_elevation_latest.npz.tmp"
             with tmp.open("wb") as stream:
-                np.savez_compressed(stream,elevation=m.elevation,variance=m.elevation_variance,
-                    origin=np.array([m.geometry.origin_x,m.geometry.origin_y]),resolution=m.geometry.resolution,
-                    slope=layers["slope"],step=layers["step"],traversability=layers["traversability"])
+                extra=(layers if self.height_only else dict(elevation=m.elevation,variance=m.elevation_variance,
+                    slope=layers['slope'],step=layers['step'],traversability=layers['traversability']))
+                np.savez_compressed(stream,origin=np.array([m.geometry.origin_x,m.geometry.origin_y]),
+                    resolution=m.geometry.resolution,**extra)
             tmp.replace(self.output/"local_elevation_latest.npz")
         self.stats["last_checkpoint_sec"]=time.monotonic()-checkpoint_started
         return self.cloud.count

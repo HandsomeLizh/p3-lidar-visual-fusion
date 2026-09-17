@@ -384,6 +384,10 @@ class TiledSemanticMapManager:
 
     def _new_tile(self, key: TileKey) -> LayeredSemanticGridMap:
         origin_x, origin_y = self._tile_origin(key)
+        if getattr(self,'_temporal_elevation_config',{}).get('enabled',False):
+            from ..elevation_fusion import TemporalElevationTile
+            return TemporalElevationTile(fusion=self._temporal_elevation_config,
+                **self._tile_kwargs,origin_x=origin_x,origin_y=origin_y)
         return LayeredSemanticGridMap(
             **self._tile_kwargs,
             origin_x=origin_x,
@@ -1617,13 +1621,18 @@ class TiledSemanticMapManager:
                 fusion.get("lidar_ground_max_neighbor_distance_m", 0.75)
             ),
         )
+        manager._temporal_elevation_config=metadata.get('elevation_fusion',{})
+        snapshot_fields=cls._SNAPSHOT_TILE_FIELDS
+        if manager._temporal_elevation_config.get('enabled',False):
+            from ..elevation_fusion import EXTRA_FIELDS
+            snapshot_fields+=EXTRA_FIELDS
         expected_shape = (manager.tile_cells, manager.tile_cells)
         for entry in metadata.get("tiles", []):
             key = (int(entry["x"]), int(entry["y"]))
             path = index_path.parent / str(entry["file"])
             with np.load(path, allow_pickle=False) as saved:
                 tile = manager._new_tile(key)
-                for name, dtype in cls._SNAPSHOT_TILE_FIELDS:
+                for name, dtype in snapshot_fields:
                     value = np.asarray(saved[name], dtype=dtype).copy()
                     if name == "semantic_votes":
                         wanted = (len(manager.class_names),) + expected_shape

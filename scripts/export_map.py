@@ -24,7 +24,7 @@ def main():
     if shutil.disk_usage(out).free<required:
         raise RuntimeError("Insufficient free disk for complete temporary export plus configured reserve")
     grid=DiskElevationMap(out/meta["elevation_database"],resolution=p["map_resolution"],
-        tile_cells=p.get("tile_cells",128),max_tiles=8,cache_mib=32)
+        tile_cells=p.get("tile_cells",128),max_tiles=8,cache_mib=32,elevation_fusion=p.get('elevation_fusion'))
     try:
         result=grid.save_snapshot(out/"_internal/grid_map_snapshot",
             timestamp_text=time.strftime("%Y%m%d_%H%M%S"),frame_id="map")
@@ -35,6 +35,7 @@ def main():
             m=grid.extract_global(p.get("global_max_cells",1000000))
             if m is not None:
                 save_dense_global_grid_map(out/"global_grid_map.npz",m,frame_id="map",
+                    height_only=p.get('map_output')=='elevation_only',
                     map_revision=grid.update_id,timestamp_text=time.strftime("%Y%m%d_%H%M%S"))
                 print("Dense global map exported",flush=True)
         except ValueError as e:print(str(e)+"; complete data remains in SQLite and tiled snapshot",flush=True)

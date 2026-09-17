@@ -28,6 +28,7 @@ def save_dense_global_grid_map(
     frame_id: str,
     map_revision: int,
     timestamp_text: str,
+    height_only: bool = False,
 ) -> Path:
     """Write a complete dense map atomically as a compressed NumPy archive.
 
@@ -42,11 +43,6 @@ def save_dense_global_grid_map(
     geometry = window.geometry
     expected_shape = (int(geometry.height), int(geometry.width))
     arrays = {
-        "occupancy": np.asarray(window.occupancy, dtype=np.int8),
-        "semantic_id": np.asarray(window.semantic, dtype=np.uint8),
-        "semantic_confidence": np.asarray(
-            window.semantic_confidence, dtype=np.float32
-        ),
         "elevation": np.asarray(window.elevation, dtype=np.float32),
         "elevation_variance": np.asarray(
             window.elevation_variance, dtype=np.float32
@@ -56,8 +52,13 @@ def save_dense_global_grid_map(
         "observation_count": np.asarray(
             window.observation_count, dtype=np.uint32
         ),
-        "color_bgr": np.asarray(window.semantic_color_bgr(), dtype=np.uint8),
     }
+    if not height_only:
+        arrays.update(occupancy=np.asarray(window.occupancy,dtype=np.int8),
+            semantic_id=np.asarray(window.semantic,dtype=np.uint8),
+            semantic_confidence=np.asarray(window.semantic_confidence,dtype=np.float32),
+            color_bgr=np.asarray(window.semantic_color_bgr(),dtype=np.uint8))
+    format_name = "t3_dense_elevation_map" if height_only else FORMAT_NAME
     for name, array in arrays.items():
         required_shape = expected_shape + ((3,) if name == "color_bgr" else ())
         if array.shape != required_shape:
@@ -67,7 +68,7 @@ def save_dense_global_grid_map(
             )
 
     payload = {
-        "format": _scalar(FORMAT_NAME, np.str_),
+        "format": _scalar(format_name, np.str_),
         "format_version": _scalar(FORMAT_VERSION, np.uint16),
         "frame_id": _scalar(str(frame_id), np.str_),
         "timestamp": _scalar(str(timestamp_text), np.str_),
@@ -81,9 +82,9 @@ def save_dense_global_grid_map(
         "height": _scalar(geometry.height, np.uint32),
         "length_x": _scalar(geometry.length_x, np.float64),
         "length_y": _scalar(geometry.length_y, np.float64),
-        "class_names": np.asarray(window.class_names, dtype=np.str_),
         **arrays,
     }
+    if not height_only:payload['class_names']=np.asarray(window.class_names,dtype=np.str_)
 
     temporary = destination.with_name(
         f".{destination.name}.{uuid.uuid4().hex}.tmp.npz"
@@ -94,9 +95,9 @@ def save_dense_global_grid_map(
             stream.flush()
             os.fsync(stream.fileno())
         with np.load(temporary, allow_pickle=False) as archive:
-            if str(archive["format"].item()) != FORMAT_NAME:
+            if str(archive["format"].item()) != format_name:
                 raise ValueError("Dense GridMap export validation failed")
-            if tuple(archive["occupancy"].shape) != expected_shape:
+            if tuple(archive["elevation"].shape) != expected_shape:
                 raise ValueError("Dense GridMap geometry validation failed")
         os.replace(temporary, destination)
         try:
@@ -118,9 +119,10 @@ def save_dense_global_grid_map(
 class LiveDenseGlobalMapWriter:
     """Coalescing background writer for the latest complete dense map."""
 
-    def __init__(self, output_path: Path, *, frame_id: str) -> None:
+    def __init__(self, output_path: Path, *, frame_id: str, height_only: bool = False) -> None:
         self.output_path = Path(output_path)
         self.frame_id = str(frame_id)
+        self.height_only = bool(height_only)
         self._condition = threading.Condition()
         self._pending = None
         self._active_revision = -1
@@ -223,6 +225,7 @@ class LiveDenseGlobalMapWriter:
                     self.output_path,
                     window,
                     frame_id=self.frame_id,
+                    height_only=self.height_only,
                     map_revision=revision,
                     timestamp_text=timestamp_text,
                 )
