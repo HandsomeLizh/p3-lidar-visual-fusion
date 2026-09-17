@@ -4,6 +4,7 @@ Reuse the frozen project's cell fusion and GridMap window conventions.
 Do not use its unbounded tile dictionary or whole-map snapshot clone.
 """
 from collections import OrderedDict
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 import json
@@ -14,6 +15,7 @@ import numpy as np
 import yaml
 from .legacy.tiled_semantic_map import TiledSemanticMapManager
 from .surface_grid import SurfaceGrid
+from .probabilistic_elevation import ProbabilisticSurfaceGrid, FILTER_FIELDS, FUSION_MODEL
 
 FIELDS = TiledSemanticMapManager._SNAPSHOT_TILE_FIELDS + (("surface_height_range", np.float32),)
 
@@ -39,9 +41,11 @@ class TileCache:
                         "revision INTEGER,PRIMARY KEY(x,y))")
         self.db.execute("CREATE INDEX IF NOT EXISTS tile_revision ON tiles(revision)")
         schema = json.dumps(dict(resolution=owner.resolution, tile_cells=owner.tile_cells,
-                                 class_names=owner.class_names), sort_keys=True)
+                                 class_names=owner.class_names,
+                                 **({'elevation_fusion': FUSION_MODEL} if owner.fusion_config else {})), sort_keys=True)
         old = self.db.execute("SELECT value FROM metadata WHERE key='schema'").fetchone()
         if old and old[0] != schema:
+            self.db.close()
             raise ValueError("Stored elevation calibration/schema differs from profile")
         self.db.execute("INSERT OR IGNORE INTO metadata VALUES('schema',?)", (schema,))
         self.db.commit()
@@ -54,7 +58,7 @@ class TileCache:
         self.evictions = self.loads = self.writes = 0
         self.tile_bytes = owner.tile_cells**2 * sum(
             np.dtype(dtype).itemsize * (len(owner.class_names) if name == "semantic_votes" else 1)
-            for name, dtype in FIELDS)
+            for name, dtype in owner.tile_fields)
         if self.max_tiles < 1 or self.max_bytes < self.tile_bytes:
             raise ValueError("Tile cache must fit at least one complete tile")
 
@@ -76,7 +80,7 @@ class TileCache:
         tile = self.owner._new_tile(key)
         if row is not None:
             with np.load(BytesIO(row[0]), allow_pickle=False) as data:
-                for name, dtype in FIELDS:
+                for name, dtype in self.owner.tile_fields:
                     if name == "surface_height_range" and name not in data:
                         # Old runs did not retain per-scan relief. Preserve their
                         # conservative evidence; do not silently relabel obstacles.
@@ -102,7 +106,7 @@ class TileCache:
             return
         tile = self.cache[key]
         payload = BytesIO()
-        np.savez_compressed(payload, **{name: getattr(tile, name) for name, _ in FIELDS})
+        np.savez_compressed(payload, **{name: getattr(tile, name) for name, _ in self.owner.tile_fields})
         with self.db:
             self.db.execute("INSERT INTO tiles VALUES(?,?,?,?) ON CONFLICT(x,y) DO UPDATE "
                             "SET payload=excluded.payload,revision=excluded.revision",
@@ -147,8 +151,11 @@ class TileCache:
 
 class DiskElevationMap(TiledSemanticMapManager):
     def __init__(self, database, *, resolution=.2, tile_cells=128,
-                 max_tiles=64, cache_mib=128, max_window_cells=250000):
+                 max_tiles=64, cache_mib=128, max_window_cells=250000, fusion_config=None):
         super().__init__(resolution=resolution, tile_cells=tile_cells)
+        self.fusion_config = dict(fusion_config) if fusion_config and fusion_config.get('enabled', False) else None
+        self.tile_fields = FIELDS + (FILTER_FIELDS if self.fusion_config else ())
+        self.fusion_stats = {}
         self.database = Path(database)
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self.max_window_cells = int(max_window_cells)
@@ -159,7 +166,48 @@ class DiskElevationMap(TiledSemanticMapManager):
 
     def _new_tile(self, key):
         x, y = self._tile_origin(key)
+        if self.fusion_config:
+            return ProbabilisticSurfaceGrid(**self._tile_kwargs, origin_x=x, origin_y=y,
+                                            fusion_config=self.fusion_config)
         return SurfaceGrid(**self._tile_kwargs, origin_x=x, origin_y=y)
+
+    def height_priors(self, cells):
+        """Read sparse cell priors with at most the existing tile-cache budget."""
+        cells = np.asarray(cells, dtype=np.int64).reshape(-1, 2)
+        height = np.full(len(cells), np.nan); variance = height.copy(); relief = height.copy()
+        pairs = np.floor_divide(cells, self.tile_cells)
+        for pair in np.unique(pairs, axis=0):
+            tile = self.tiles.get(tuple(pair))
+            if tile is None: continue
+            selected = np.flatnonzero(np.all(pairs == pair, axis=1))
+            col, row = (cells[selected] - pair*self.tile_cells).T
+            known = tile.elevation_count[row, col] > 0
+            selected, row, col = selected[known], row[known], col[known]
+            height[selected] = tile.elevation_mean[row, col]
+            variance[selected] = (tile.height_filter_variance[row, col] if self.fusion_config
+                                  else tile.elevation_variance_layer()[row, col])
+            relief[selected] = tile.surface_height_range[row, col]
+        return height, variance, relief
+
+    def update_probabilistic(self, observations, *, stamp, source):
+        if not self.fusion_config: raise ValueError('Probabilistic elevation is not enabled')
+        cells = observations['cells']
+        if not len(cells): return {}
+        self.update_id += 1
+        stats = {}
+        pairs = np.floor_divide(cells, self.tile_cells)
+        for pair in np.unique(pairs, axis=0):
+            tile = self.tiles.get(tuple(pair), writable=True, create=True)
+            selected = np.flatnonzero(np.all(pairs == pair, axis=1))
+            for index in selected:
+                col, row = cells[index] - pair*self.tile_cells
+                result = tile.fuse_height(int(row), int(col), float(observations['height'][index]),
+                    float(observations['variance'][index]), float(observations['pose_variance'][index]),
+                    float(observations['relief'][index]), float(stamp), source)
+                stats[result] = stats.get(result, 0)+1
+            tile._fusion_revision = self.update_id
+        for name, count in stats.items(): self.fusion_stats[name] = self.fusion_stats.get(name, 0)+count
+        return stats
 
     def update_elevation_only(self, *, points_map):
         points = np.asarray(points_map, dtype=np.float64).reshape(-1, 3)
@@ -201,7 +249,7 @@ class DiskElevationMap(TiledSemanticMapManager):
             if tile is None:continue
             col,row=cell-pair*self.tile_cells
             surface_range = tile.surface_height_range[row,col]
-            for name,_ in FIELDS:
+            for name,_ in self.tile_fields:
                 values=getattr(tile,name)
                 fill=np.inf if name=='elevation_min' else -np.inf if name=='elevation_max' else 0
                 if name=='semantic_votes':values[:,row,col]=fill
@@ -242,6 +290,14 @@ class DiskElevationMap(TiledSemanticMapManager):
                 length_x=nx*self.resolution, length_y=ny*self.resolution)
         finally:
             self.max_window_cells = original
+
+    def extract_window_with_halo(self, **kwargs):
+        """Read one neighbor ring for terrain derivatives, after query validation."""
+        geometry = self.window_geometry(**kwargs)
+        padded = replace(geometry, width=geometry.width+2, height=geometry.height+2,
+                         origin_x=geometry.origin_x-self.resolution,
+                         origin_y=geometry.origin_y-self.resolution)
+        return geometry, self._extract_geometry(padded)
 
     def memory_stats(self):
         return dict(resident_tiles=len(self.tiles.cache), total_tiles=len(self.tiles),

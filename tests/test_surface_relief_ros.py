@@ -14,6 +14,7 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Header
 from grid_map_msgs.msg import GridMap
+from grid_map_msgs.srv import GetGridMap
 from t3_lidar_visual_fusion.terrain_mapper import TerrainMapper
 from t3_lidar_visual_fusion.ros_utils import xyz_cloud
 
@@ -25,8 +26,10 @@ def main():
     with tempfile.TemporaryDirectory(dir=ROOT/'build', prefix='surface_ros_') as td:
         tmp = Path(td)
         cfg = yaml.safe_load((ROOT/'config/simulation_live.yaml').read_text())
+        classify = os.environ.get('T3_TEST_CLASSIFICATION', '0') == '1'
         sensor = np.eye(4); sensor[2, 3] = 1.
         cfg.update(map_window=8., tile_cells=16, semantic_topic='',
+                   publish_terrain_classification=classify,
                    map_publish_period=100., global_publish_period=100.,
                    mapping_pose_settle_sec=0., base_from_lidar=sensor.tolist())
         cfg['dynamic_map']['enabled'] = False
@@ -73,25 +76,47 @@ def main():
                 scan(np.r_[ground,rocks], index*.1, dz)
                 publish()
                 for key in messages:
-                    assert value(key,'obstacle',-.38,.42)==0., (index,key)
-                    assert value(key,'obstacle',2.02,.02)==1., (index,key)
+                    assert abs(value(key,'elevation',-.38,.42)) < 1e-5, (index,key)
+                    assert abs(value(key,'elevation',2.02,.02)-.8) < 1e-5, (index,key)
+                    assert value(key,'elevation_variance',-.38,.42) > 0., (index,key)
+                    if classify:
+                        assert value(key,'obstacle',-.38,.42)==0., (index,key)
+                        assert value(key,'obstacle',2.02,.02)==1., (index,key)
+                    else:
+                        assert set(messages[key][-1].layers)=={'elevation','elevation_variance','observation_count'}
             retained=value('global','elevation',-.38,.42)
             scan(ground+[30.,0.,0.],30.,.36); publish()
             assert value('global','elevation',-.38,.42)==retained
-            assert value('global','obstacle',-.38,.42)==0.
-            assert value('global','obstacle',2.02,.02)==1.
+            assert abs(value('global','elevation',2.02,.02)-.8)<1e-5
             assert np.isnan(value('global','elevation',15.,0.)), 'Unseen gap was filled'
             # Retained points from different times must not restore false relief.
             mapper.grid.rebuild_cells([[-2,2]],mapper.cloud);mapper.dirty=True;publish()
-            assert value('global','obstacle',-.38,.42)==0.
+            assert abs(value('global','elevation',-.38,.42))<1e-5
+            request=GetGridMap.Request();request.frame_id='odom'
+            request.length_x=4.;request.length_y=4.;request.layers=['elevation','elevation_variance']
+            response=mapper.query(request,GetGridMap.Response())
+            assert set(response.map.layers)==set(request.layers)
+            if not classify:
+                assert mapper.occupancy_pub is None and mapper.incremental_pub is None and not mapper.overview_pubs
+                request.layers=['obstacle'];response=mapper.query(request,GetGridMap.Response())
+                assert not response.map.layers
+            mapper.save()
+            with np.load(mapper.output/'local_elevation_latest.npz') as saved:
+                assert np.isfinite(saved['elevation']).any()
+                if not classify:assert 'traversability' not in saved.files
             result=dict(passed=True,mapped_scans=mapper.stats['mapped_scans'],
                         injected_height_drift_m=.36,local_global_agree=True,
                         real_rocks_preserved=True,history_retained_after_30m_motion=True,
                         unobserved_gap_preserved=True,elapsed_sec=time.monotonic()-started,
+                        elevation_only=not classify,query_and_checkpoint_passed=True,
+                        ground_height_error_m=abs(float(value('global','elevation',-.38,.42))),
+                        retained_rock_height_m=float(value('global','elevation',2.02,.02)),
+                        height_bias=mapper.height_bias.stats,
                         scope='Isolated ROS 81; synthetic motion and height drift; no vehicle commands')
             target=Path(os.environ.get('T3_TEST_RESULTS',ROOT/'results/surface_relief'))
             target.mkdir(parents=True,exist_ok=True)
-            (target/'surface_relief_ros.json').write_text(json.dumps(result,indent=2));print(json.dumps(result))
+            filename='surface_relief_ros.json' if classify else 'elevation_only_ros.json'
+            (target/filename).write_text(json.dumps(result,indent=2));print(json.dumps(result))
         finally:
             executor.shutdown();mapper.dense_writer.close();mapper.grid.close();mapper.delivery.close();mapper.cloud.close();mapper.tum.close()
             mapper.destroy_node();driver.destroy_node();rclpy.try_shutdown()

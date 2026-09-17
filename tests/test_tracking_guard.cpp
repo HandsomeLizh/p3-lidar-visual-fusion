@@ -29,5 +29,14 @@ int main(){
     candidate.bias_g.z()=3.;
     require(limits.check(measured,candidate,1.3,false),"CV angular runaway accepted");
     require(!limits.check(measured,candidate,1.3,true),"IMU gyro bias confused with CV angular rate");
+    TrackingLimits slow;slow.max_speed=.3;slow.body_origin_in_sensor=Eigen::Vector3d(-.607,0.,0.);
+    measured=State{};candidate=measured;
+    candidate.rot_end=Eigen::AngleAxisd(.5,Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    candidate.pos_end=slow.body_origin_in_sensor-candidate.rot_end*slow.body_origin_in_sensor;
+    candidate.bias_g.z()=.5;
+    candidate.vel_end=-candidate.rot_end*candidate.bias_g.cross(slow.body_origin_in_sensor);
+    require(!slow.check(measured,candidate,1.,false),"Off-centre LiDAR turn mistaken for body translation");
+    candidate.pos_end.x()+=.9;
+    require(slow.check(measured,candidate,1.4,false),"0.9m fake displacement accepted at simulation speed");
     std::cout<<"PASS: 21m recovery rejection, 300 failed CV scans held, nearby recovery, IMU state semantics\n";
 }

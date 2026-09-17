@@ -44,6 +44,7 @@ class AdaptiveGuard(OdometryGuard):
         self.visual_continuity_enabled=continuity_cfg.pop('enabled',False)
         continuity_gap=continuity_cfg.pop('max_gap',self.cfg['vision_gate']['max_gap'])
         self.visual_continuity=VisualContinuity(max_gap=continuity_gap,**continuity_cfg)
+        self.create_subscription(Odometry,'/fusion/visual_epoch_origin',self.visual_epoch_origin,3)
         self.pose_source_preference=self.cfg.get('pose_source_preference','balanced')
         if self.pose_source_preference not in ('balanced','visual'):
             raise ValueError('pose_source_preference must be balanced or visual')
@@ -54,6 +55,9 @@ class AdaptiveGuard(OdometryGuard):
         self.visual_candidate=None;self.prefer_visual_output=False;self.output_source='waiting'
         self.ekf_references=deque(maxlen=128)
         self.visual_pose_pub=self.create_publisher(Odometry,'/fusion/visual_continuous',3)
+        self.recovery_pose_pub=self.create_publisher(Odometry,'/fusion/recovery_reference',3)
+        self.lidar_applied_submap=0
+        self.last_lio_message=None;self.pending_lidar_bridge=None
         self.lidar_arrivals = deque(maxlen=12)
         self.visual_arrivals = deque(maxlen=12)
         lidar_config = dict(self.cfg["vision_gate"])
@@ -96,6 +100,22 @@ class AdaptiveGuard(OdometryGuard):
             if self.stationary is not None:
                 self.create_subscription(TwistWithCovarianceStamped,"/fusion/telemetry_twist",self.telemetry_twist,10)
         self.get_logger().info("Adaptive repair: persistent epoch transforms and full directional covariance")
+
+    def visual_epoch_origin(self,msg):
+        """Retain the frontend's coordinate origin without accepting motion."""
+        if not self.visual_continuity_enabled or self.visual_source!='learned':return
+        if msg.child_frame_id!='base_link' or not msg.header.frame_id.startswith('learned_epoch_'):return
+        try:
+            stamp=stamp_sec(msg);now=time.monotonic()
+            if not self.visual_timing.check(stamp,self.get_clock().now().nanoseconds/1e9,now,now).valid:return
+            covariance=pose_covariance(msg.pose.covariance)
+            if np.linalg.eigvalsh(covariance)[0]<1e5:return
+            self.visual_continuity.remember_origin(stamp,msg.header.frame_id,
+                transform_from_pose(msg.pose.pose))
+            for sample in reversed(self.ekf_references):
+                if self.visual_continuity.anchor(*sample):break
+                if self.visual_continuity.reason=='reference_uncertainty_worse':break
+        except ValueError:return
 
     def telemetry_report(self,msg):
         try:
@@ -142,6 +162,9 @@ class AdaptiveGuard(OdometryGuard):
             if submap>=self.submap_id and submap>0:
                 self.submap_id=submap;self.bridge_variance=np.maximum(self.bridge_variance,floors)
             self.lidar_quality = data
+            if (submap>self.lidar_applied_submap and self.last_lio_message is not None and
+                    abs(float(data.get('stamp_sec',-1.))-stamp_sec(self.last_lio_message))<.05):
+                self.lio(self.last_lio_message,retry_bridge=True)
         except (ValueError, TypeError):
             self.lidar_quality = {"reliable": False, "reason": "invalid_quality_message"}
 
@@ -193,18 +216,21 @@ class AdaptiveGuard(OdometryGuard):
         return self.lio_poses.at(stamp, tolerance=self.cfg.get("agreement_stamp_tolerance", .05),
                                  max_gap=self.cfg.get("agreement_pose_max_gap", .35))
 
-    def lio(self, msg):
+    def lio(self, msg, retry_bridge=False):
         try:
             stamp = stamp_sec(msg)
             if msg.child_frame_id != "base_link" or msg.header.frame_id != "odom":
                 raise ValueError("LiDAR input must describe base_link in its stable odom frame")
             transform = transform_from_pose(msg.pose.pose)
-            if self.last_lio and stamp <= self.last_lio[0]:
+            if self.last_lio and (stamp<self.last_lio[0] or (stamp==self.last_lio[0] and not retry_bridge)):
                 raise ValueError("Nonmonotonic LiDAR input")
             covariance = pose_covariance(msg.pose.covariance)
-            self.last_lio = stamp, transform.copy()
-            self.last_lio_wall = time.monotonic()
-            self.lidar_arrivals.append(self.last_lio_wall)
+            if not retry_bridge:
+                self.last_lio_message=copy.deepcopy(msg)
+                self.pending_lidar_bridge=None
+                self.last_lio = stamp, transform.copy()
+                self.last_lio_wall = time.monotonic()
+                self.lidar_arrivals.append(self.last_lio_wall)
             # Reject a failed registration, but retain a partial observation.
             # The EKF receives the full matrix, including the weak eigenvectors.
             if np.linalg.eigvalsh(covariance)[0] >= self.cfg.get("lidar_max_pose_variance", 100.):
@@ -212,6 +238,28 @@ class AdaptiveGuard(OdometryGuard):
                 self.lidar_gate.close("lidar_registration_unavailable")
                 self.adaptive_rejections["lidar_geometry"] += 1
                 self.process_visual(); return
+            if self.submap_id>self.lidar_applied_submap:
+                # A backend-confirmed replacement map must agree with the
+                # already accepted trajectory, not jump from a held failed pose.
+                reference=self.filtered_poses.at(stamp,tolerance=self.cfg.get('agreement_stamp_tolerance',.05),
+                    max_gap=self.cfg.get('agreement_pose_max_gap',.35))
+                quality_stamp=float(self.lidar_quality.get('stamp_sec',-1.))
+                if (reference is None or abs(quality_stamp-stamp)>.05 or
+                        not self.lidar_quality.get('reliable',False)):
+                    self.lidar_usable=False;self.lidar_covariance_reliable=False
+                    self.pending_lidar_bridge=copy.deepcopy(msg)
+                    self.process_visual()
+                    return
+                _,distance,angle=motion(reference,transform)
+                if distance>.25 or angle>.1:
+                    self.lidar_usable=False;self.lidar_covariance_reliable=False
+                    return
+                self.pending_lidar_bridge=None
+                self.lidar_gate.begin_epoch('odom_submap_'+str(self.submap_id))
+                self.lidar_gate.alignment=np.eye(4)
+                self.lidar_applied_submap=self.submap_id
+                self.lio_poses=PoseBuffer(self.cfg.get('pose_buffer_samples',1200))
+                self.lidar_covariances.clear();self.consistency.reset()
             # The initial scan defines the gauge; no recovery interval is lost.
             self.lidar_gate.recovery_frames = 1 if self.lidar_constraints == 0 else int(self.cfg.get("lidar_recovery_frames", 3))
             result = self.lidar_gate.accept(stamp, transform)
@@ -329,18 +377,14 @@ class AdaptiveGuard(OdometryGuard):
                 # Publication still waits for the visual recovery gate below.
                 self.visual_continuity.observe(stamp,msg.header.frame_id,transform,weighted_covariance)
                 self.visual_candidate=None
-                # During preferred visual tracking, keep its established frame.
-                # Re-anchoring every frame would simply copy LiDAR's jitter.
-                # Startup, a new epoch and recovery from EKF fallback still
-                # establish a co-timed anchor before selecting visual output.
-                keep_reference=(self.pose_source_preference=='visual' and self.output_source=='visual'
-                    and self.output_qualified and self.visual_continuity.reference is not None)
-                if not keep_reference:
-                    if reference is not None:
-                        ref_cov=self.lidar_reference_covariance_at(stamp)
-                        if ref_cov is not None:self.visual_continuity.anchor(stamp,reference,ref_cov)
-                    for sample in reversed(self.ekf_references):
-                        if self.visual_continuity.anchor(*sample):break
+                # Only poses which passed the formal output gate may establish
+                # or refresh the visual frame. A rejected EKF/LiDAR pose must
+                # never drag otherwise continuous vision across the same jump.
+                # Qualified EKF output anchors immediately in filtered(); this
+                # loop handles visual frames which arrive after that output.
+                for sample in reversed(self.ekf_references):
+                    if self.visual_continuity.anchor(*sample):break
+                    if self.visual_continuity.reason=='reference_uncertainty_worse':break
             if result.transform is None:
                 if result.reason != "recovering":
                     self.visual_motion.reset()
@@ -509,7 +553,15 @@ class AdaptiveGuard(OdometryGuard):
         self.output_continuity.accept(stamp, transform)
         self.output_qualified = True
         self.output_source=source
-        if source=='ekf' and self.active_sources()[0] and self.lidar_covariance_reliable:
+        if source=='visual':
+            self.recovery_pose_pub.publish(msg)
+            pending=self.pending_lidar_bridge
+            if pending is not None and abs(stamp_sec(pending)-stamp)<.05:
+                self.pending_lidar_bridge=None
+                self.lio(pending,retry_bridge=True)
+        if source=='ekf' and self.active_sources()[0]:
+            # The qualified fused pose can combine partial LiDAR geometry and
+            # independent visual motion; LiDAR need not observe all six axes.
             self.ekf_references.append((stamp,transform.copy(),cov.copy()))
             if self.visual_continuity_enabled:self.visual_continuity.anchor(stamp,transform,cov)
         # The map, formal odometry and RViz must use the same qualified pose.
@@ -540,7 +592,7 @@ class AdaptiveGuard(OdometryGuard):
             output_source=self.output_source,visual_continuity=self.visual_continuity.status(),
             pose_source_preference=self.pose_source_preference,
             visual_motion_information_scale=self.visual_motion_information_scale,
-            submap_id=self.submap_id,bridge_position_variance=float(self.bridge_variance[0]),
+            submap_id=self.submap_id,lidar_applied_submap=self.lidar_applied_submap,bridge_position_variance=float(self.bridge_variance[0]),
             bridge_rotation_variance=float(self.bridge_variance[1]),
             filtered_quality=self.filter_quality,
             visual_pose_axes=self.cfg.get("visual_pose_axes", ["x","y","z","roll","pitch","yaw"]),

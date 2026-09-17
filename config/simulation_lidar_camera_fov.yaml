@@ -1,0 +1,425 @@
+# Geometry-only camera-view crop. Full LiDAR is retained for localization.
+name: Live fused localization; LiDAR map in common stereo camera frustum
+use_imu: false
+calibration_confirmed: false
+instantaneous_cloud: true
+left_topic: /Car/T5/Cam_Left/image_raw/color
+right_topic: /Car/T5/Cam_Right/image_raw/color
+lidar_topic: /Car/T5/OS1/points
+mapping_sources:
+- lidar
+stereo_mapping_topic: /fusion/stereo_points
+imu_topic: /imu/data
+lidar_input_frame: sensors
+point_time_field: t
+point_time_scale: 1.0e-09
+max_scan_duration: 0.2
+input_image_size:
+- 2448
+- 2048
+output_image_size:
+- 640
+- 536
+camera_k:
+- - 2316.620064041787
+  - 0.0
+  - 1230.9520882337595
+- - 0.0
+  - 2316.2422800565905
+  - 990.6850123648671
+- - 0.0
+  - 0.0
+  - 1.0
+distortion:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+base_from_imu:
+- - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+- - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+- - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_lidar:
+- - 0.99979238153889
+  - 0.019805577221191
+  - 0.004788833650211
+  - 0.606527746614407
+- - -0.0198065746223
+  - 0.999803817606889
+  - 0.000160936077148
+  - -0.002299598293482
+- - -0.004784706733462
+  - -0.000255753054894
+  - 0.999988520520035
+  - 0.612012803599003
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_camera_left:
+- - 0.0
+  - -0.421035813367491
+  - 0.907044014291465
+  - 0.529841638180579
+- - -1.0
+  - 0.0
+  - 0.0
+  - 0.129759135607494
+- - 0.0
+  - -0.907044014291465
+  - -0.421035813367491
+  - 0.831680201971904
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+base_from_camera_right:
+- - 0.0
+  - -0.421035813367491
+  - 0.907044014291465
+  - 0.529841638180579
+- - -1.0
+  - 0.0
+  - 0.0
+  - -0.120269777698872
+- - 0.0
+  - -0.907044014291465
+  - -0.421035813367491
+  - 0.831680201971904
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+stereo_max_skew: 0.01
+min_range: 0.5
+vehicle_returns:
+  enabled: true
+  # Approximate base_link selection only: XY uses the existing P4 wheel envelope.
+  # Z deliberately excludes observed ground (~-0.27 m). This is NOT a calibrated mesh.
+  # Replace these bounds with verified body geometry for hardware deployment.
+  minimum_xyz_m: [-0.591, -0.409, -0.05]
+  maximum_xyz_m: [0.591, 0.409, 1.30]
+  max_display_points: 12000
+max_range: 70.0
+max_input_points: 140000
+vision_gate:
+  recovery_frames: 4
+  max_speed: 4.0
+  max_angular_speed: 2.0
+  max_step: 6.0
+  max_angle: 1.0
+  max_gap: 6.0
+min_brightness: 8.0
+min_image_features: 25
+require_vins_features: false
+min_vins_features: 15
+image_quality_tolerance: 0.15
+feature_tolerance: 4.5
+source_wall_timeout: 12.0
+lio_max_speed: 8.0
+lio_max_angular_speed: 3.0
+lio_pose_variance:
+- 0.04
+- 0.04
+- 0.04
+- 0.01
+- 0.01
+- 0.01
+vision_pose_variance:
+- 0.01
+- 0.01
+- 0.01
+- 0.005
+- 0.005
+- 0.005
+map_resolution: 0.2
+publish_terrain_classification: false
+elevation_fusion:
+  enabled: true
+  minimum_variance: 0.0001
+  maximum_innovation_m: 0.1
+  minimum_innovation_m: 0.03
+  mahalanobis_threshold: 3.0
+  change_confirmations: 3
+  candidate_max_gap_sec: 6.0
+  candidate_tolerance_m: 0.05
+  allow_confirmed_lowering: false
+  max_cells_per_scan: 6000
+  priority_radius_m: 8.0
+  sensor_floor_std_m: 0.01
+  range_std_m: 0.015
+  range_std_per_m: 0.0002
+  beam_angle_std_rad: 0.001
+  stereo_disparity_std_px: 0.5
+  stereo_pixel_std_px: 0.5
+  height_bias_enabled: true
+  bias_reference_source: lidar
+  bias_min_cells: 80
+  bias_min_span_m: 3.0
+  bias_max_range_m: 12.0
+  bias_max_prior_variance: 0.25
+  bias_max_relief_m: 0.06
+  bias_inlier_band_m: 0.04
+  bias_min_inlier_ratio: 0.75
+  bias_max_residual_slope: 0.008
+  bias_max_offset_m: 0.5
+  bias_max_change_m: 0.25
+  scan_conflict_ratio: 0.35
+cloud_voxel_size: 0.12
+cloud_preview_points: 150000
+# Published planner window; the independent UI follow view remains 32 x 32 m.
+map_window: 64.0
+map_publish_period: 2.0
+max_elevation_points: 12000
+pose_tolerance: 0.08
+pose_max_gap: 0.5
+mapping_wait_timeout: 15.0
+tof_sources: []
+semantic_topic: ''
+semantic_tolerance: 0.15
+tile_cells: 128
+max_resident_tiles: 64
+tile_cache_mib: 128
+max_query_cells: 250000
+pressure_query_cells: 160000
+global_max_cells: 1000000
+global_publish_period: 2.0
+overview_side_cells: 256
+overview_resolution: 1.0
+preview_voxel_size: 0.15
+obstacle_threshold: 65
+dynamic_map:
+  enabled: true
+  confirmations: 3
+  max_gap_sec: 8.0
+  ray_radius_m: 0.04
+  range_margin_m: 0.25
+  max_range_m: 40.0
+  max_candidates: 40000
+  max_changed_cells: 256
+  max_position_variance: 0.01
+  max_rotation_variance: 0.0025
+pose_buffer_samples: 1200
+map_pending_scans: 4
+stereo_queue_depth: 2
+max_image_bytes: 24000000
+max_cloud_bytes: 16000000
+trajectory_max_poses: 5000
+checkpoint_period: 5.0
+min_disk_free_gib: 5.0
+mapper_soft_mib: 1536
+min_system_available_mib: 2048
+process_tree_soft_mib: 6144
+process_tree_stop_mib: 8192
+lidar_cube_side: 160.0
+lidar_detection_range: 40.0
+lidar_map_voxel: 0.4
+max_slope_deg: 35.0
+max_step_m: 0.3
+require_lidar_agreement: true
+visual_pending_samples: 8
+visual_reference_wait: 2.0
+agreement_stamp_tolerance: 0.05
+agreement_pose_max_gap: 0.35
+min_image_contrast: 18.0
+min_feature_coverage: 0.2
+min_image_sharpness: 8.0
+exposure_change_threshold: 65.0
+motion_consistency:
+  translation_floor: 0.15
+  translation_ratio: 0.2
+  rotation_floor: 0.14
+  rotation_ratio: 0.2
+  min_span: 0.5
+  history_seconds: 4.0
+  max_gap: 6.0
+  capacity: 240
+visual_source: learned
+visual_odometry_topic: /fusion/learned_raw
+visual_max_age_sec: 4.0
+visual_future_tolerance_sec: 0.1
+ekf_history_seconds: 10.0
+learned_visual:
+  backend: xfeat_lighterglue
+  device: cuda
+  max_image_side: 640
+  max_keypoints: 1024
+  max_processing_hz: 5.0
+  cpu_threads: 2
+  mixed_precision: false
+  flash_attention: true
+  measure_stages: true
+  match_threshold: 0.1
+  depth_confidence: 0.9
+  width_confidence: 0.95
+  min_cosine_similarity: 0.82
+  nearest_neighbor_ratio: 0.8
+  max_normalized_image_bytes: 1048576
+  epipolar_error_px: 1.5
+  min_disparity_px: 1.5
+  min_depth_m: 0.4
+  max_depth_m: 60.0
+  stereo_reprojection_px: 1.5
+  min_stereo_points: 35
+  min_stereo_coverage: 0.12
+  min_pnp_inliers: 25
+  pnp_iterations: 150
+  pnp_reprojection_px: 2.5
+  min_pnp_ratio: 0.45
+  min_pnp_coverage: 0.15
+  min_stereo_checks: 12
+  stereo_motion_floor_m: 0.15
+  stereo_motion_depth_ratio: 0.03
+  min_stereo_motion_ratio: 0.6
+  max_tracking_gap_sec: 6.0
+  max_recovery_gap_sec: 120.0
+  recovery_keyframes: 4
+  max_speed_mps: 4.0
+  max_angular_speed_rps: 2.0
+  keyframe_max_age_sec: 1.0
+  keyframe_translation_m: 0.25
+  keyframe_rotation_rad: 0.15
+  keyframe_min_tracks: 60
+visual_wall_timeout_sec: 6.0
+image_input_reliability: reliable
+lidar_input_reliability: reliable
+adaptive_source_selection: true
+pose_source_preference: visual
+visual_motion_information_scale: 1.25
+visual_continuity:
+  enabled: true
+  max_gap: 120.0
+qualified_position_variance: 4.0
+qualified_rotation_variance: 0.5
+lidar_recovery_frames: 3
+lidar_max_pose_variance: 100.0
+independent_visual_min_score: 0.45
+lidar_backend: voxelmap
+voxelmap:
+  threads: 2
+  voxel_size: 1.0
+  downsample_size: 0.1
+  max_iterations: 30
+  visual_recovery_enabled: true
+  independent_visual_topic: /fusion/learned_raw
+  # Upper bound only: continue immediately when the same-frame visual result arrives.
+  independent_visual_wait_sec: 1.0
+  degeneracy_projection_enabled: true
+  submap_after_failures: 4
+  submap_confirmation_scans: 3
+  visual_seed_tolerance: 0.08
+  visual_seed_wait_sec: 1.0
+  visual_seed_position_variance: 4.0
+  visual_seed_rotation_variance: 0.5
+  submap_retry_cooldown_sec: 5.0
+  tracking_max_speed: 0.3
+  tracking_max_angular_speed: 1.0
+  tracking_max_step: 2.0
+  tracking_max_angle: 0.75
+lidar_recovery_max_step: 2.0
+lidar_recovery_max_angle: 0.75
+output_continuity:
+  max_speed: 1.0
+  max_angular_speed: 1.0
+  max_step: 2.0
+  max_angle: 0.75
+  correction_translation: 0.25
+  correction_rotation: 0.1
+imu_mode: auto
+imu_calibration_confirmed: false
+lidar_input_basis: ros_flu
+lidar_basis_conversion: 'Measured FRD sensor basis to published ROS FLU: T_base_sensor_flu
+  = T_base_sensor_frd @ diag(1,-1,-1,1); mounting translation retained.'
+visual_constraint_mode: body_twist
+mapping_pose_settle_sec: 1.6
+normalized_camera_input: true
+ekf_sensor_timeout: 10.0
+telemetry_motion:
+  enabled: false
+  fuse_velocity: false
+  calibration_confirmed: false
+  input_encoding: legacy_driver_from_flu_wire
+  wire_frame: unverified
+  wire_frame_confirmed: false
+  velocity_frame: world
+  world_frame_alignment_confirmed: false
+  world_from_feedback_rotation:
+  - - 1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 1.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 1.0
+  orientation_child_from_base_rotation:
+  - - -1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 1.0
+  - - 0.0
+    - 1.0
+    - 0.0
+  linear_scale: 1.0
+  angular_scale: 0.017453292519943295
+  base_from_feedback_rotation:
+  - - 1.0
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 1.0
+    - 0.0
+  - - 0.0
+    - 0.0
+    - 1.0
+  source_domain: 10
+  topic: /car/odom
+  frame_id: base_link
+  max_output_hz: 25.0
+  max_age_sec: 0.3
+  future_tolerance_sec: 0.05
+  max_speed_mps: 4.0
+  max_angular_speed_rps: 2.0
+  standard_deviation:
+  - 0.05
+  - 0.05
+  - 0.05
+  - 0.03
+  - 0.03
+  - 0.03
+stationary:
+  enabled: true
+  confirm_frames: 3
+  max_gap: 3.0
+lidar_mapping_crop:
+  enabled: true
+  image_margin_px: 0.0
+  match_stereo_depth_limit: false
+  image_feather_fraction: 0.15
+  full_density_range_m: 10.0
+  range_feather_m: 5.0
+  sampling_cell_m: 0.1
+  # Stop at disconnected scan rings for cloud, elevation and P4 together.
+  # Localization still uses the complete LiDAR scan.
+  continuity:
+    enabled: true
+    sector_deg: 2.0
+    max_gap_m: 0.25
+    feather_m: 0.6
+    seed_range_m: 5.0

@@ -12,8 +12,9 @@ from rclpy.qos import qos_profile_sensor_data,QoSProfile,ReliabilityPolicy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, Imu, PointCloud2, PointField
 from std_msgs.msg import String
-from .ros_utils import cloud_arrays, stamp_sec
+from .ros_utils import cloud_arrays, stamp_sec, xyz_cloud
 from .core import rigid
+from .vehicle_returns import VehicleReturns
 
 
 class SensorAdapter(Node):
@@ -30,6 +31,10 @@ class SensorAdapter(Node):
         self.counts = {"pairs":0, "clouds":0, "rejected":0, "left_received":0, "right_received":0, "sync_dropped":0, "imu_received":0, "imu_forwarded":0, "imu_rejected":0}
         self.pubs = [self.create_publisher(Image,"/fusion/left",3), self.create_publisher(Image,"/fusion/right",3)]
         self.cloud_pub = self.create_publisher(PointCloud2,"/fusion/lidar",3)
+        self.vehicle_returns=VehicleReturns(self.cfg)
+        self.lidar_mount=rigid(self.cfg['base_from_lidar'])
+        self.vehicle_pub=(self.create_publisher(PointCloud2,"/T3/demo/vehicle_returns",1)
+                          if self.vehicle_returns.enabled else None)
         self.imu_pub = self.create_publisher(Imu,"/fusion/imu",100)
         self.status = self.create_publisher(String,"/fusion/sensor_status",10)
         reliability=self.cfg.get("image_input_reliability","best_effort")
@@ -100,6 +105,17 @@ class SensorAdapter(Node):
             if len(msg.data)>self.cfg.get("max_cloud_bytes",16000000):
                 raise ValueError("PointCloud2 payload exceeds configured input byte cap")
             xyz=cloud_arrays(msg)
+            # Keep body candidates as a current-frame display only. In particular
+            # publish before the range/FOV filters; they never enter /fusion/lidar.
+            body_mask=np.zeros(len(xyz),dtype=bool)
+            if self.vehicle_pub is not None:
+                base=xyz@self.lidar_mount[:3,:3].T+self.lidar_mount[:3,3]
+                body_mask=self.vehicle_returns.mask(base)
+                points=self.vehicle_returns.display(base[body_mask])
+                header=copy.deepcopy(msg.header);header.frame_id='base_link'
+                self.vehicle_pub.publish(xyz_cloud(points,header))
+                self.counts['vehicle_return_candidates']=int(body_mask.sum())
+                self.counts['vehicle_return_display_points']=len(points)
             names={f.name for f in msg.fields}
             if self.cfg["instantaneous_cloud"] or self.cfg.get("cloud_motion_compensated",False):
                 times=np.zeros(len(xyz))
@@ -111,7 +127,7 @@ class SensorAdapter(Node):
                     raise ValueError("Per-point time must be scan-start relative seconds")
             intensity=cloud_arrays(msg,("intensity",))[:,0] if "intensity" in names else np.zeros(len(xyz))
             ranges=np.linalg.norm(xyz,axis=1)
-            valid=np.isfinite(xyz).all(axis=1)&(ranges>=self.cfg["min_range"])&(ranges<=self.cfg["max_range"])
+            valid=np.isfinite(xyz).all(axis=1)&~body_mask&(ranges>=self.cfg["min_range"])&(ranges<=self.cfg["max_range"])
             xyz,times,intensity=xyz[valid],times[valid],intensity[valid]
             cap=self.cfg.get("max_input_points",160000)
             if len(xyz)>cap:

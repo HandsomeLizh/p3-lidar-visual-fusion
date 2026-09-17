@@ -10,6 +10,7 @@
 struct TrackingLimits {
     double max_speed = 4., max_angular_speed = 2.;
     double max_step = 6., max_angle = 1.;
+    Eigen::Vector3d body_origin_in_sensor=Eigen::Vector3d::Zero();
     void validate() const {
         for (double v : {max_speed, max_angular_speed, max_step, max_angle})
             if (!std::isfinite(v) || v <= 0.)
@@ -20,11 +21,16 @@ struct TrackingLimits {
         if (!std::isfinite(dt) || dt <= 0. || !candidate.pos_end.allFinite() ||
             !candidate.rot_end.allFinite() || !candidate.vel_end.allFinite() ||
             !candidate.bias_g.allFinite() || !candidate.cov.allFinite()) return "nonfinite_state";
-        const double distance=(candidate.pos_end-reference.pos_end).norm();
+        const double distance=((candidate.pos_end+candidate.rot_end*body_origin_in_sensor)-
+                               (reference.pos_end+reference.rot_end*body_origin_in_sensor)).norm();
         const double angle=Eigen::AngleAxisd(reference.rot_end.transpose()*candidate.rot_end).angle();
         if (distance > std::min(max_step, max_speed*dt+.05)) return "translation_discontinuity";
         if (angle > std::min(max_angle, max_angular_speed*dt+.02)) return "rotation_discontinuity";
-        if (candidate.vel_end.norm() > max_speed) return "unbounded_velocity";
+        const Eigen::Vector3d body_velocity=candidate.vel_end+
+            (using_imu?Eigen::Vector3d::Zero().eval():
+             (candidate.rot_end*candidate.bias_g.cross(body_origin_in_sensor)).eval());
+        const double velocity_limit=max_speed+(using_imu?max_angular_speed*body_origin_in_sensor.norm():0.);
+        if (body_velocity.norm() > velocity_limit) return "unbounded_velocity";
         // In CV mode this slot is angular velocity. In IMU mode it is gyro bias.
         if (!using_imu && candidate.bias_g.norm() > max_angular_speed) return "unbounded_angular_velocity";
         return nullptr;

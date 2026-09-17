@@ -10,7 +10,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile,ReliabilityPolicy
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image,PointCloud2
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 from .image_quality import assess_image
@@ -18,7 +18,7 @@ from .learned_matching import LearnedMatcher
 from .learned_tracker import LearnedStereoTracker
 from .stereo_geometry import TrackingFailure
 from .visual_timing import VisualTiming
-from .ros_utils import set_pose,stamp_sec
+from .ros_utils import set_pose,stamp_sec,xyz_cloud
 
 
 class LatestStereoPair:
@@ -79,15 +79,24 @@ class LearnedOdometry(Node):
         self.failure_streak=0
         self.next_probe=0.
         cv2.setNumThreads(1)
-        self.backend=LearnedMatcher(root,self.cfg)
-        # Warm CUDA kernels before accepting timed sensor data.
-        width,height=self.profile["output_image_size"]
-        warm=self.backend.extract(np.random.default_rng(0).integers(0,256,(height,width),dtype=np.uint8))
-        self.backend.match(warm,warm)
-        del warm
-        self.tracker=LearnedStereoTracker(self.profile,self.backend)
+        self.encoding='bgr8' if self.cfg['backend']=='roma' else 'mono8'
+        if self.cfg['backend']=='roma':
+            from .roma_tracker import RomaStereoTracker
+            self.tracker=RomaStereoTracker(self.profile)
+            self.backend=self.tracker
+        else:
+            self.backend=LearnedMatcher(root,self.cfg)
+            # Warm CUDA kernels before accepting timed sensor data.
+            width,height=self.profile["output_image_size"]
+            warm=self.backend.extract(np.random.default_rng(0).integers(0,256,(height,width),dtype=np.uint8))
+            self.backend.match(warm,warm)
+            del warm
+            self.tracker=LearnedStereoTracker(self.profile,self.backend)
         self.resources=self.backend.resource_snapshot()
         self.pub=self.create_publisher(Odometry,self.profile["visual_odometry_topic"],3)
+        self.origin_pub=self.create_publisher(Odometry,"/fusion/visual_epoch_origin",3)
+        self.mapping_pub=(self.create_publisher(PointCloud2,self.profile["stereo_mapping_topic"],2)
+            if self.profile.get("stereo_mapping_topic") else None)
         self.status_pub=self.create_publisher(String,"/fusion/learned_status",3)
         self.create_subscription(String,"/fusion/status",self.fusion_feedback,3)
         qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE)
@@ -118,7 +127,7 @@ class LearnedOdometry(Node):
     def image(self,msg,side):
         self.increment("left_received" if side==0 else "right_received")
         if ((msg.width,msg.height)!=tuple(self.profile["output_image_size"])
-            or msg.encoding not in ("mono8","8UC1")
+            or msg.encoding not in (("bgr8",) if self.encoding=='bgr8' else ("mono8","8UC1"))
             or len(msg.data)>self.cfg.get("max_normalized_image_bytes",1048576)):
             self.increment("invalid_input");return
         if len(self.frames[side])==self.frames[side].maxlen:self.increment("sync_dropped")
@@ -146,6 +155,20 @@ class LearnedOdometry(Node):
             self.samples.append({k:v for k,v in record.items() if k.endswith("_sec") and isinstance(v,(int,float))})
             self.resources=resources
         self.file_logger.info(json.dumps(record,allow_nan=False))
+
+    def publish_stereo(self,left,queued):
+        """Publish current metric depth; the mapper obtains the fused body pose.
+
+        A temporal tracking failure must not discard valid stereo depth, and a
+        failed stereo pair must never reuse the previous pair's point cloud.
+        """
+        sample=getattr(self.tracker,'current_stereo',None)
+        if (self.mapping_pub is None or self.queue.stopped or sample is None or
+                sample[0]!=stamp_sec(left) or not self.age(left,queued).valid):return 0
+        points=self.tracker.geometry.mapping_points(sample[1])
+        header=copy.deepcopy(left.header);header.frame_id='base_link'
+        if len(points):self.mapping_pub.publish(xyz_cloud(points,header))
+        return len(points)
 
     def reject(self,reason,left,queued,start=None,metrics=None):
         retained=self.tracker.reject(stamp_sec(left))
@@ -183,14 +206,17 @@ class LearnedOdometry(Node):
                 if not self.age(left,queued).valid:
                     self.reject(self.age(left,queued).reason,left,queued,begin);continue
                 try:
-                    a=self.bridge.imgmsg_to_cv2(left,desired_encoding="mono8")
-                    b=self.bridge.imgmsg_to_cv2(right,desired_encoding="mono8")
-                    quality=[assess_image(x,texture_required=False) for x in (a,b)]
+                    a=self.bridge.imgmsg_to_cv2(left,desired_encoding=self.encoding)
+                    b=self.bridge.imgmsg_to_cv2(right,desired_encoding=self.encoding)
+                    quality=[assess_image(cv2.cvtColor(x,cv2.COLOR_BGR2GRAY) if x.ndim==3 else x,
+                                          texture_required=False) for x in (a,b)]
                     if not all(q.valid for q in quality):
                         self.reject(next(q.reason for q in quality if not q.valid),left,queued,begin);continue
                     result=self.tracker.process(stamp_sec(left),a,b)
                 except (TrackingFailure,ValueError,cv2.error) as exc:
-                    self.reject(str(exc)[:160],left,queued,begin,getattr(exc,'metrics',None));continue
+                    metrics=dict(getattr(exc,'metrics',{}))
+                    metrics['mapping_stereo_points']=self.publish_stereo(left,queued)
+                    self.reject(str(exc)[:160],left,queued,begin,metrics);continue
                 freshness=self.age(left,queued)
                 if not freshness.valid:
                     self.reject(freshness.reason,left,queued,begin);continue
@@ -204,7 +230,11 @@ class LearnedOdometry(Node):
                 msg.pose.covariance=np.diag(np.full(6,1e6) if result.anchor else variance).reshape(-1).tolist()
                 msg.twist.covariance=np.diag(np.full(6,1e6)).reshape(-1).tolist()
                 if self.queue.stopped:return
+                # Explicit gauge event: an ordinary rejected/held identity pose
+                # must never be mistaken for a newly validated stereo origin.
+                if result.anchor:self.origin_pub.publish(msg)
                 self.pub.publish(msg)
+                result.metrics['mapping_stereo_points']=self.publish_stereo(left,queued)
                 self.increment("anchors" if result.anchor else "tracked")
                 if result.anchor and result.metrics["reason"] not in ("initialized","tracking_gap"):
                     self.failure_streak+=1

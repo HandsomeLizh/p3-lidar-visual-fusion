@@ -27,6 +27,71 @@ def project(projection,points):
     return uv,z
 
 
+def spatial_density_mask(world_points,weights,cell_size):
+    """Stable thinning by world XY cell; repeated scans cannot fill a fade band.
+
+    Every height in a column gets the same spatial sample, so thinning does not
+    preferentially discard a high or low surface. No random state or new points.
+    """
+    points=np.asarray(world_points,dtype=float).reshape(-1,3)
+    weights=np.asarray(weights,dtype=float).reshape(-1)
+    if (len(points)!=len(weights) or not np.isfinite(cell_size) or cell_size<=0 or
+            not np.isfinite(weights).all() or np.any((weights<0)|(weights>1))):
+        raise ValueError('Invalid spatial density sampling configuration')
+    valid=np.isfinite(points).all(axis=1)
+    keep=valid&(weights>=1.)
+    ids=np.flatnonzero(valid&(weights>0.)&(weights<1.))
+    if not len(ids):return keep
+    cells=np.floor(points[ids,:2]/cell_size).astype(np.int64).astype(np.uint64)
+    hashed=cells[:,0]*np.uint64(0x9E3779B97F4A7C15)
+    hashed ^= (cells[:,1]+np.uint64(0xD1B54A32D192ED03))*np.uint64(0xBF58476D1CE4E5B9)
+    hashed ^= hashed>>np.uint64(30)
+    hashed *= np.uint64(0xBF58476D1CE4E5B9)
+    hashed ^= hashed>>np.uint64(27)
+    hashed *= np.uint64(0x94D049BB133111EB)
+    hashed ^= hashed>>np.uint64(31)
+    sample=(hashed>>np.uint64(11)).astype(np.float64)*(1./2**53)
+    keep[ids]=sample<weights[ids]
+    return keep
+
+
+def radial_continuity_weights(base_points,*,sector_deg=2.,max_gap_m=.25,
+                              feather_m=.6,seed_range_m=5.):
+    """Keep the near connected returns before the first radial measurement gap.
+
+    Run on the measured scan BEFORE cosmetic thinning. Each angular sector
+    starts at its first nearby return, so the sensor's initial blind zone is
+    not a gap. A sector containing only remote returns is not a near seed.
+    Heights and measured coordinates are never changed or interpolated.
+    """
+    options=np.asarray([sector_deg,max_gap_m,feather_m,seed_range_m],dtype=float)
+    if (not np.isfinite(options).all() or not .25<=sector_deg<=30. or
+            max_gap_m<=0. or feather_m<0. or seed_range_m<=0.):
+        raise ValueError('Invalid cloud preview continuity configuration')
+    points=np.asarray(base_points,dtype=float).reshape(-1,3)
+    weights=np.zeros(len(points),dtype=float)
+    ranges=np.hypot(points[:,0],points[:,1])
+    ids=np.flatnonzero(np.isfinite(points).all(axis=1)&np.isfinite(ranges)&(ranges>0.))
+    if not len(ids):return weights
+    angles=np.mod(np.arctan2(points[ids,1],points[ids,0])+np.pi,2*np.pi)
+    sectors=np.floor(angles/np.deg2rad(sector_deg)).astype(np.int64)
+    order=np.lexsort((ranges[ids],sectors))
+    ids=ids[order];sectors=sectors[order];distance=ranges[ids]
+    new_sector=np.r_[True,sectors[1:]!=sectors[:-1]]
+    starts=np.flatnonzero(new_sector);group=np.cumsum(new_sector)-1
+    gap=(~new_sector[1:])&(np.diff(distance)>max_gap_m+1e-6)
+    cutoff=np.full(len(starts),np.inf)
+    np.minimum.at(cutoff,group[1:][gap],distance[:-1][gap])
+    seeded=distance[starts]<=seed_range_m
+    if feather_m>0.:
+        fade=np.clip((cutoff[group]-distance)/feather_m,0.,1.)
+        weights[ids]=fade*fade*(3.-2.*fade)
+    else:
+        weights[ids]=(distance<=cutoff[group]).astype(float)
+    weights[ids[~seeded[group]]]=0.
+    return weights
+
+
 @dataclass
 class GeometryResult:
     current_from_reference: np.ndarray
@@ -59,6 +124,7 @@ class StereoGeometry:
         if abs(self.p1[1,3])>1e-5 or abs(self.p1[0,3])<1e-5:
             raise ValueError("This frontend requires horizontal rectified stereo")
         self.k=self.p0[:,:3].copy()
+        self.inverse_k=np.linalg.inv(self.k)
         self.disparity_sign=-np.sign(self.p1[0,3])
         self.map0=cv2.initUndistortRectifyMap(k0,d0,r0,self.p0,self.size,cv2.CV_32FC1)
         self.map1=cv2.initUndistortRectifyMap(k1,d1,r1,self.p1,self.size,cv2.CV_32FC1)
@@ -87,6 +153,12 @@ class StereoGeometry:
             h=cv2.triangulatePoints(self.p0,self.p1,a.T,b.T).T
             with np.errstate(divide="ignore",invalid="ignore"):
                 xyz=h[:,:3]/h[:,3,None]
+            # PnP observes the LEFT pixel. Symmetric DLT also fits right-image
+            # vertical noise, moving the point off that left viewing ray. That
+            # inconsistency creates motion even when an image repeats exactly.
+            # Retain stereo depth, but anchor its bearing to the left observation.
+            rays=np.column_stack((a,np.ones(len(a))))@self.inverse_k.T
+            xyz=rays*xyz[:,2,None]
             uv0,z0=project(self.p0,xyz);uv1,z1=project(self.p1,xyz)
             error=np.maximum(np.linalg.norm(uv0-a,axis=1),np.linalg.norm(uv1-b,axis=1))
             good=np.isfinite(xyz).all(axis=1)&(z0>self.cfg.get("min_depth_m",.4))
@@ -96,6 +168,87 @@ class StereoGeometry:
         valid=np.isfinite(points).all(axis=1)
         return points,dict(stereo_matches=int(len(matches)),stereo_points=int(valid.sum()),
             stereo_coverage=coverage(left[valid],self.size))
+
+    def mapping_points(self,points):
+        """Conservative near-field stereo evidence, expressed once in base_link.
+
+        sigma_z is a screening estimate from disparity precision, not a calibrated
+        posterior uncertainty. Localization still uses the full stereo range.
+        """
+        points=np.asarray(points,dtype=float).reshape(-1,3)
+        points=points[np.isfinite(points).all(axis=1)]
+        depth=points[:,2]
+        sigma=depth**2*float(self.cfg.get("mapping_disparity_sigma_px",.5))/abs(self.p1[0,3])
+        keep=(depth>self.cfg.get("min_depth_m",.4))&(depth<=self.cfg.get("mapping_max_depth_m",12.))
+        keep &= sigma<=self.cfg.get("mapping_max_depth_std_m",.08)
+        points=points[keep]
+        return points@self.base_from_rect[:3,:3].T+self.base_from_rect[:3,3]
+
+    def mapping_frustum_mask(self,base_points,*,image_margin_px=0.,match_stereo_depth_limit=True):
+        """Select body-frame returns inside both rectified camera images.
+
+        This is a geometric field-of-view crop, not a camera occlusion test.
+        It never changes a point's measured coordinates or the localization scan.
+        """
+        return self.mapping_frustum_weights(base_points,image_margin_px=image_margin_px,
+            match_stereo_depth_limit=match_stereo_depth_limit)>0.
+
+    def mapping_frustum_weights(self,base_points,*,image_margin_px=0.,match_stereo_depth_limit=True,
+                                image_feather_fraction=0.,depth_feather_m=0.,
+                                full_density_range_m=None,range_feather_m=0.):
+        """Full density in the original view, smooth falloff just outside it."""
+        base=np.asarray(base_points,dtype=float).reshape(-1,3)
+        margin=float(image_margin_px)
+        if not np.isfinite(margin) or margin<0 or 2*margin>=min(self.size):
+            raise ValueError('Camera crop margin leaves no valid image area')
+        feather=float(image_feather_fraction);depth_feather=float(depth_feather_m)
+        range_feather=float(range_feather_m)
+        if not np.isfinite([feather,depth_feather,range_feather]).all() or min(feather,depth_feather,range_feather)<0:
+            raise ValueError('Camera feather widths must be finite and nonnegative')
+        if full_density_range_m is not None:
+            full_density_range_m=float(full_density_range_m)
+            if (not np.isfinite(full_density_range_m) or full_density_range_m<=0 or
+                    match_stereo_depth_limit or depth_feather>0):
+                raise ValueError('Explicit LiDAR range requires positive range and disabled stereo depth limit')
+        elif range_feather>0:raise ValueError('Range feather requires a full density range')
+        rect=(base-self.base_from_rect[:3,3])@self.base_from_rect[:3,:3]
+        a,za=project(self.p0,rect);b,zb=project(self.p1,rect)
+        minimum=float(self.cfg.get('min_depth_m',.4))
+        maximum=float(self.cfg.get('mapping_max_depth_m',12.))
+        if match_stereo_depth_limit:
+            sigma=float(self.cfg.get('mapping_disparity_sigma_px',.5))
+            allowed=float(self.cfg.get('mapping_max_depth_std_m',.08))
+            if not np.isfinite([sigma,allowed]).all() or min(sigma,allowed)<=0:
+                raise ValueError('Invalid stereo depth limit for camera crop')
+            maximum=min(maximum,np.sqrt(allowed*abs(self.p1[0,3])/sigma))
+        if not np.isfinite([minimum,maximum]).all() or minimum<0 or maximum<=minimum:
+            raise ValueError('Invalid camera crop depth interval')
+        keep=np.isfinite(rect).all(axis=1)&(za>minimum)&(zb>minimum)
+        weights=keep.astype(float)
+        def falloff(x):
+            t=np.clip(x,0.,1.)
+            return (1.-t)**2*(1.+2.*t)
+        if full_density_range_m is not None:
+            distance=np.linalg.norm(base[:,:2],axis=1)
+            weights *= (falloff((distance-full_density_range_m)/range_feather)
+                        if range_feather>0 else distance<=full_density_range_m)
+        elif depth_feather>0:
+            weights *= falloff((za-maximum)/depth_feather)
+        else:weights *= za<=maximum
+        outside=np.zeros((len(base),2))
+        for uv in (a,b):
+            weights *= np.isfinite(uv).all(axis=1)
+            if feather>0:
+                excess=np.maximum(np.maximum(margin-uv,uv-(np.asarray(self.size)-margin)),0.)
+                outside=np.maximum(outside,excess/(np.asarray(self.size)*feather))
+            else:
+                weights *= (uv[:,0]>=margin)&(uv[:,1]>=margin)
+                weights *= (uv[:,0]<self.size[0]-margin)&(uv[:,1]<self.size[1]-margin)
+        if feather>0:
+            # Euclidean excess rounds the image corners instead of introducing
+            # another expanded rectangular boundary.
+            weights *= falloff(np.linalg.norm(outside,axis=1))
+        return np.nan_to_num(weights,nan=0.,posinf=0.,neginf=0.)
 
     def estimate(self,reference_points,current_points,reference_pixels,current_pixels,matches):
         pairs=np.asarray(matches,dtype=int).reshape(-1,2)

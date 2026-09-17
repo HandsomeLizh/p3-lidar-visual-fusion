@@ -54,10 +54,12 @@ def nodes(context):
     if value("external_estimates").lower()!="true" and p.get("visual_source","vins") in ("vins","learned"):
         optional_visual=[n[2]]
     def visual_exited(event,context):
+        stereo_only=p.get('mapping_sources')==['stereo']
         (out/"visual_unavailable.json").write_text(json.dumps(dict(
             reason="visual_process_exited",returncode=getattr(event,"returncode",None),
-            action="continue_lidar_only")))
-        return [LogInfo(msg="Visual frontend exited; continuing LiDAR localization and mapping")]
+            action="continue_lidar_localization_stereo_mapping_paused" if stereo_only else "continue_lidar_only")))
+        return [LogInfo(msg="Visual frontend exited; LiDAR localization continues; stereo map updates paused"
+            if stereo_only else "Visual frontend exited; continuing LiDAR localization and mapping")]
     if p.get("telemetry_motion",{}).get("enabled",False):
         telemetry=Node(package="t3_lidar_visual_fusion",executable="telemetry_motion",
             parameters=[dict(params,output_dir=str(out))],output="screen")

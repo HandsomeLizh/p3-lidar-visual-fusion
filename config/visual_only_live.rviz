@@ -1,0 +1,62 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 30; 33; 39
+    Fixed Frame: visual_odom
+    Frame Rate: 20
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Ground reference grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 100
+      Color: 100; 105; 115
+    - Class: rviz_default_plugins/Path
+      Name: Pure visual trajectory
+      Enabled: true
+      Topic:
+        Value: /visual_test/path
+        Depth: 1
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+      Buffer Length: 1
+      Line Style: Billboards
+      Line Width: 0.06
+      Color: 65; 225; 145
+    - Class: rviz_default_plugins/Axes
+      Name: Vehicle pose
+      Enabled: true
+      Reference Frame: base_link
+      Length: 1
+      Radius: 0.05
+    - Class: rviz_default_plugins/Image
+      Name: Left camera
+      Enabled: true
+      Topic:
+        Value: /fusion/left
+        Depth: 1
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 20
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 1.25
+      Yaw: 0
+      Target Frame: base_link
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+Window Geometry:
+  Width: 1200
+  Height: 800

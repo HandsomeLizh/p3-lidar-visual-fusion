@@ -8,7 +8,8 @@ import numpy as np
 class StationaryDetector:
     def __init__(self, confirm_frames=3, max_gap=3., stamp_tolerance=.05,
                  flow_limit_px=.25, range_limit_m=.03, speed_limit_mps=.003,
-                 angular_limit_rps=.002):
+                 angular_limit_rps=.002, require_cloud=True):
+        self.require_cloud=bool(require_cloud)
         self.confirm_frames=int(confirm_frames)
         self.max_gap=float(max_gap);self.tolerance=float(stamp_tolerance)
         self.flow_limit=float(flow_limit_px);self.range_limit=float(range_limit_m)
@@ -115,18 +116,20 @@ class StationaryDetector:
             telemetry='quiet' if aligned else 'not_aligned'
         images=[self._at(h,stamp) for h in self.image_evidence]
         cloud=self._at(self.cloud_evidence,stamp)
-        if any(v is None for v in images) or cloud is None:
-            self.invalidate('missing_current_image_or_lidar_evidence');return False
+        if any(v is None for v in images) or (self.require_cloud and cloud is None):
+            self.invalidate('missing_current_image_or_lidar_evidence' if self.require_cloud
+                            else 'missing_current_stereo_evidence');return False
         speed=float(np.linalg.norm(velocity[:3]));angular=float(np.linalg.norm(velocity[3:]))
         quiet=(np.isfinite(velocity).all() and speed<=self.speed_limit and angular<=self.angular_limit
                and max(v['flow_p90_px'] for v in images)<=self.flow_limit
-               and cloud['range_change_p75_m']<=self.range_limit)
+               and (not self.require_cloud or cloud['range_change_p75_m']<=self.range_limit))
         self.consecutive=self.consecutive+1 if quiet else 0
         stopped=self.consecutive>=self.confirm_frames
         self.result={'state':'stationary' if stopped else ('confirming' if quiet else 'moving'),
-                     'reason':'image_lidar_visual_motion_consensus','stamp_sec':stamp,
+                     'reason':('image_lidar_visual_motion_consensus' if self.require_cloud else
+                               'stereo_image_visual_motion_consensus'),'stamp_sec':stamp,
                      'consecutive':self.consecutive,'image_flow_p90_px':[v['flow_p90_px'] for v in images],
-                     **cloud,'visual_speed_mps':speed,'visual_angular_speed_rps':angular,
+                     **(cloud if self.require_cloud else {}),'visual_speed_mps':speed,'visual_angular_speed_rps':angular,
                      'telemetry_check':telemetry}
         return stopped
 

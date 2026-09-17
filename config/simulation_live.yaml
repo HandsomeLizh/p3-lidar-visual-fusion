@@ -5,6 +5,9 @@ instantaneous_cloud: true
 left_topic: /Car/T5/Cam_Left/image_raw/color
 right_topic: /Car/T5/Cam_Right/image_raw/color
 lidar_topic: /Car/T5/OS1/points
+# Localization fuses both sensors; map geometry comes exclusively from stereo.
+mapping_sources: [stereo]
+stereo_mapping_topic: /fusion/stereo_points
 imu_topic: /imu/data
 lidar_input_frame: sensors
 point_time_field: t
@@ -101,6 +104,13 @@ base_from_camera_right:
   - 1.0
 stereo_max_skew: 0.01
 min_range: 0.5
+vehicle_returns:
+  enabled: true
+  # Approximate base_link selection only; not a calibrated vehicle mesh.
+  # XY follows the existing P4 wheel envelope; Z excludes observed ground.
+  minimum_xyz_m: [-0.591, -0.409, -0.05]
+  maximum_xyz_m: [0.591, 0.409, 1.30]
+  max_display_points: 12000
 max_range: 70.0
 max_input_points: 140000
 vision_gate:
@@ -134,8 +144,42 @@ vision_pose_variance:
 - 0.005
 - 0.005
 map_resolution: 0.2
+publish_terrain_classification: false
+elevation_fusion:
+  enabled: true
+  minimum_variance: 0.0001
+  maximum_innovation_m: 0.10
+  minimum_innovation_m: 0.03
+  mahalanobis_threshold: 3.0
+  change_confirmations: 3
+  candidate_max_gap_sec: 6.0
+  candidate_tolerance_m: 0.05
+  allow_confirmed_lowering: false
+  max_cells_per_scan: 6000
+  priority_radius_m: 8.0
+  # Noise-model defaults, to be calibrated for the actual sensors.
+  sensor_floor_std_m: 0.01
+  range_std_m: 0.015
+  range_std_per_m: 0.0002
+  beam_angle_std_rad: 0.001
+  stereo_disparity_std_px: 0.5
+  stereo_pixel_std_px: 0.5
+  height_bias_enabled: true
+  bias_reference_source: stereo
+  bias_min_cells: 80
+  bias_min_span_m: 3.0
+  bias_max_range_m: 12.0
+  bias_max_prior_variance: 0.25
+  bias_max_relief_m: 0.06
+  bias_inlier_band_m: 0.04
+  bias_min_inlier_ratio: 0.75
+  bias_max_residual_slope: 0.008
+  bias_max_offset_m: 0.5
+  bias_max_change_m: 0.25
+  scan_conflict_ratio: 0.35
 cloud_voxel_size: 0.12
 cloud_preview_points: 150000
+# Published planner window; the independent UI follow view remains 32 x 32 m.
 map_window: 64.0
 map_publish_period: 2.0
 max_elevation_points: 12000
@@ -143,7 +187,7 @@ pose_tolerance: 0.08
 pose_max_gap: 0.5
 mapping_wait_timeout: 15.0
 tof_sources: []
-semantic_topic: /task2/seg_mask
+semantic_topic: ''
 semantic_tolerance: 0.15
 tile_cells: 128
 max_resident_tiles: 64
@@ -240,7 +284,8 @@ learned_visual:
   stereo_motion_depth_ratio: 0.03
   min_stereo_motion_ratio: 0.6
   max_tracking_gap_sec: 6.0
-  max_recovery_gap_sec: 30.0
+  max_recovery_gap_sec: 120.0
+  recovery_keyframes: 4
   max_speed_mps: 4.0
   max_angular_speed_rps: 2.0
   keyframe_max_age_sec: 1.0
@@ -258,7 +303,7 @@ visual_motion_information_scale: 1.25
 visual_continuity:
   enabled: true
   # Same epoch only: the frontend must geometrically reconnect a retained reference.
-  max_gap: 30.0
+  max_gap: 120.0
 # One qualification boundary for official visual output and LiDAR initial guesses.
 # These do not relax LiDAR residual, convergence, or motion checks.
 qualified_position_variance: 4.0
@@ -269,10 +314,14 @@ independent_visual_min_score: 0.45
 lidar_backend: voxelmap
 voxelmap:
   threads: 2
-  voxel_size: 2.0
-  downsample_size: 0.2
+  voxel_size: 1.0
+  downsample_size: 0.1
   max_iterations: 30
   visual_recovery_enabled: true
+  independent_visual_topic: /fusion/learned_raw
+  # Upper bound only: continue immediately when the same-frame visual result arrives.
+  independent_visual_wait_sec: 1.0
+  degeneracy_projection_enabled: true
   submap_after_failures: 4
   submap_confirmation_scans: 3
   visual_seed_tolerance: 0.08
@@ -282,7 +331,7 @@ voxelmap:
   submap_retry_cooldown_sec: 5.0
   # Vehicle limits for this live deployment, independent of route/scene.
   # The current controller limit is 0.2 m/s; retain margin for gain and latency.
-  tracking_max_speed: 1.0
+  tracking_max_speed: 0.3
   tracking_max_angular_speed: 1.0
   tracking_max_step: 2.0
   tracking_max_angle: 0.75

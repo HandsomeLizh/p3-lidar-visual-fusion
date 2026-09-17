@@ -33,6 +33,31 @@ class StationaryTests(unittest.TestCase):
         self.confirm()
         self.assertEqual(self.detector.status()['state'],'stationary')
 
+    def test_visual_only_mode_requires_both_images_but_no_range_input(self):
+        self.detector=StationaryDetector(require_cloud=False)
+        decisions=[]
+        for i in range(4):
+            stamp=100.+i
+            for side in [0,1]:self.detector.image(stamp,self.image,side)
+            decisions.append(self.detector.check(stamp,np.zeros(6)))
+        self.assertEqual(decisions,[False,False,False,True])
+        self.assertFalse(self.detector.cloud_evidence)
+        self.assertEqual(self.detector.status()['reason'],'stereo_image_visual_motion_consensus')
+        moved=cv2.warpAffine(self.image,np.float32([[1,0,.75],[0,1,0]]),(320,256),borderMode=cv2.BORDER_REFLECT)
+        self.detector.image(104.,self.image,0);self.detector.image(104.,moved,1)
+        self.assertFalse(self.detector.check(104.,np.zeros(6)))
+        self.detector.image(105.,self.image,0)  # Missing current right image.
+        self.assertFalse(self.detector.check(105.,np.zeros(6)))
+
+    def test_visual_only_subpixel_creep_is_not_erased_by_new_anchors(self):
+        self.detector=StationaryDetector(require_cloud=False)
+        decisions=[]
+        for i in range(12):
+            image=cv2.warpAffine(self.image,np.float32([[1,0,i*.12],[0,1,0]]),(320,256),borderMode=cv2.BORDER_REFLECT)
+            for side in [0,1]:self.detector.image(100.+i,image,side)
+            decisions.append(self.detector.check(100.+i,np.zeros(6)))
+        self.assertFalse(any(decisions),decisions)
+
     def test_subpixel_creep_accumulates_against_image_anchor(self):
         decisions=[self.frame(shift=i*.12) for i in range(12)]
         self.assertFalse(any(decisions),decisions)

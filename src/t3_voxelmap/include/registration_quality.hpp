@@ -59,6 +59,33 @@ struct RegistrationQuality {
         // Ordinary updates retain partially observed directional constraints.
         return registration_usable() && translation_ratio() >= .02 && pose_ratio() >= .003;
     }
+    M6 observable_projection(int &weak_directions) const {
+        // Work in metre-equivalent coordinates so angular and translational
+        // eigenvalues have compatible units. Include both joint degeneracy
+        // and weak translation normals; no assumption that the ground is XY.
+        const M6 d=scaling();
+        Eigen::SelfAdjointEigenSolver<M6> joint(d*information*d);
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> translation(information.topLeftCorner<3,3>());
+        if(joint.info()!=Eigen::Success || translation.info()!=Eigen::Success || !matched) {
+            weak_directions=6;return M6::Zero();
+        }
+        M6 weak=M6::Zero();
+        for(int i=0;i<6;++i)if(joint.eigenvalues()[i]<.003*std::max(1e-12,joint.eigenvalues()[5]))
+            weak+=joint.eigenvectors().col(i)*joint.eigenvectors().col(i).transpose();
+        for(int i=0;i<3;++i)if(translation.eigenvalues()[i]<.02*std::max(1e-12,translation.eigenvalues()[2])) {
+            Eigen::Matrix<double,6,1> v=Eigen::Matrix<double,6,1>::Zero();
+            v.head<3>()=translation.eigenvectors().col(i);weak+=v*v.transpose();
+        }
+        Eigen::SelfAdjointEigenSolver<M6> union_solver(weak);
+        if(union_solver.info()!=Eigen::Success){weak_directions=6;return M6::Zero();}
+        M6 keep=M6::Identity();weak_directions=0;
+        // Nearly coincident constraints describe the same weak direction.
+        for(int i=0;i<6;++i)if(union_solver.eigenvalues()[i]>.01) {
+            keep-=union_solver.eigenvectors().col(i)*union_solver.eigenvectors().col(i).transpose();
+            ++weak_directions;
+        }
+        return d*keep*d.inverse();
+    }
     M6 directional_covariance() const {
         const M6 d = scaling();
         Eigen::SelfAdjointEigenSolver<M6> solver(d * weighted_information * d);

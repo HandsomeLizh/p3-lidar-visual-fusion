@@ -1089,6 +1089,10 @@ class TiledSemanticMapManager:
             length_x=length_x,
             length_y=length_y,
         )
+        return self._extract_geometry(geometry)
+
+    def _extract_geometry(self, geometry: GridGeometry) -> SemanticMapWindow:
+        """Read an already validated, cell-aligned rectangle without re-snapping."""
         width = geometry.width
         height = geometry.height
         start_column = int(round(

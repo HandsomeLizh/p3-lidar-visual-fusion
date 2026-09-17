@@ -22,6 +22,7 @@ def main():
     rclpy.init();n=rclpy.create_node('isolated_submap_fixture')
     cloud=n.create_publisher(PointCloud2,'/fusion/lidar',3)
     visual=n.create_publisher(Odometry,'/fusion/visual_continuous',3)
+    formal=n.create_publisher(Odometry,'/fusion/recovery_reference',3)
     clock=n.create_publisher(Clock,'/clock',10)
     metrics=[];poses=[];quality=[]
     n.create_subscription(String,'/fusion/lidar_metrics',lambda m:metrics.append(json.loads(m.data)),100)
@@ -43,6 +44,7 @@ def main():
         process=subprocess.Popen([str(ROOT/'install/t3_voxelmap/lib/t3_voxelmap/voxelmap_node'),
             '--ros-args','-p','use_sim_time:=true','-p','visual_recovery_enabled:=true',
             '-p','voxel_size:=2.0','-p','downsample_size:=0.2','-p','max_iterations:=30',
+            '-p','degeneracy_projection_enabled:=true',
             '-p','visual_seed_wait_sec:=0.15','-p','submap_after_failures:=3','-p','submap_confirmation_scans:=3',
             '-p','threads:=1'],stdout=handle,stderr=subprocess.STDOUT,start_new_session=True)
         spin(10.,lambda:cloud.get_subscription_count()==1)
@@ -62,7 +64,7 @@ def main():
     # cluster far in one corner is a different, weak-geometry failure case.
     distant=-scene+np.array([-2.,-2.,1.])
     frame_index=0
-    def frame(points,seed=True,bad=False,position=None):
+    def frame(points,seed=True,bad=False,position=None,accepted=False):
         nonlocal frame_index
         t=1000.+frame_index;x=frame_index*.02;frame_index+=1
         if position is not None:x=float(position)
@@ -71,7 +73,10 @@ def main():
             m=Odometry();m.header=header(t);m.header.frame_id='odom';m.child_frame_id='base_link'
             m.pose.pose.position.x=x;m.pose.pose.orientation.w=1.
             m.pose.covariance=(np.eye(6)*(1e6 if bad else .0001)).ravel().tolist()
-            visual.publish(m);spin()
+            visual.publish(m)
+            if accepted:formal.publish(m)
+            spin()
+        if points is None:return None,x
         before=len(metrics);cloud.publish(xyz_cloud(points-[x,0.,0.],header(t)))
         spin(8.,lambda:len(metrics)>before);spin()
         return metrics[-1],x
@@ -117,12 +122,39 @@ def main():
         # This does not assert that an arbitrary later viewpoint must converge.
         for _ in range(3):m,x=frame(scene,position=accepted_x)
         assert m['valid_update'] and m['submap_id']==0,metrics[-6:]
+        stop();frame_index=0;launch('submap_far_continuous_reference')
+        for _ in range(5):frame(scene,accepted=True)
+        held=np.array(metrics[-1]['position'])
+        # Qualified formal output keeps moving while LiDAR receives no usable
+        # scan. No 20 m one-frame teleport is supplied as the trusted reference.
+        for step in range(1,41):
+            frame(None,position=.08+step*.5,accepted=True)
+        new_scene=distant+np.array([20.08,0.,0.])
+        for _ in range(4):m,x=frame(new_scene,position=20.08)
+        assert m['recovery_attempts']==0 and not m['valid_update'],m
+        np.testing.assert_allclose(m['position'],held,atol=1e-10)
+        bootstrap=None;first_recovered=None;bridge_reason=None
+        for _ in range(12):
+            m,x=frame(new_scene,position=20.08,accepted=True)
+            if m['tracking_reason']=='submap_bootstrap':
+                bootstrap=m['frame'];bridge_reason=m['visual_seed_reason']
+                assert not m['valid_update']
+            if m['submap_id']==1 and m['valid_update']:
+                first_recovered=m['frame'];break
+        assert bootstrap is not None and first_recovered-bootstrap>=3,metrics[-10:]
+        assert bridge_reason=='accepted_visual_output_bridge',bridge_reason
+        assert abs(poses[-1].pose.pose.position.x-20.08)<.03
+        far_bridge=dict(frontend_alone_does_not_relocate=True,
+                        accepted_continuous_reference_recovers=True,
+                        bridge_distance_m=float(abs(20.08-held[0])),
+                        confirmation_scans=first_recovered-bootstrap,
+                        position_error_m=float(abs(poses[-1].pose.pose.position.x-20.08)))
         stop();frame_index=0;launch('submap_weak_geometry')
         for _ in range(5):frame(scene)
         for _ in range(12):m,x=frame(scene+[20.,20.,20.])
         assert m['submap_id']==0 and m['recovery_aborts']>0,m
         result=dict(passed=True,success=success,blocked=blocked,candidate_failure_restores_old_map=True,
-                    weak_geometry_does_not_promote_submap=True,
+                    weak_geometry_does_not_promote_submap=True,far_bridge=far_bridge,
                     scope='ROS domain 74; synthetic geometry and independent visual poses, compiled VoxelMap')
         (out/'submap_verification.json').write_text(json.dumps(result,indent=2));print(json.dumps(result))
     finally:

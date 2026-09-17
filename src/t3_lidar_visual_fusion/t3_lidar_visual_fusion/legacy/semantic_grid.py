@@ -249,8 +249,14 @@ class LayeredSemanticGridMap:
                 accepted = np.array([median], dtype=np.float64)
 
         batch_count = int(accepted.size)
-        batch_mean = float(np.mean(accepted))
-        batch_M2 = float(np.sum((accepted - batch_mean) ** 2))
+        if batch_count == 1:
+            batch_mean = batch_min = batch_max = float(accepted[0])
+            batch_M2 = 0.
+        else:
+            batch_mean = float(np.mean(accepted))
+            batch_M2 = float(np.sum((accepted - batch_mean) ** 2))
+            batch_min = float(np.min(accepted))
+            batch_max = float(np.max(accepted))
 
         old_count = int(self.elevation_count[row, column])
         old_mean = float(self.elevation_mean[row, column])
@@ -273,8 +279,6 @@ class LayeredSemanticGridMap:
         self.elevation_count[row, column] = new_count
         self.elevation_mean[row, column] = new_mean
         self.elevation_M2[row, column] = new_M2
-        batch_min = float(np.min(accepted))
-        batch_max = float(np.max(accepted))
         self.elevation_min[row, column] = min(
             self.elevation_min[row, column], batch_min,
         )

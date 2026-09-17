@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 
 run_state.json
+visual_only_live_state.json
 run_state.lock
 build_manifest.json
 simulation_sources.lock

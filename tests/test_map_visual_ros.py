@@ -14,7 +14,8 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile,DurabilityPolicy,ReliabilityPolicy
 from nav_msgs.msg import Path as RosPath
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped,TransformStamped
+from tf2_ros import StaticTransformBroadcaster
 from std_msgs.msg import Header,String
 from grid_map_msgs.msg import GridMap
 import yaml
@@ -28,10 +29,13 @@ ui=frontend.visual_monitor
 
 def main():
     assert os.environ['ROS_DOMAIN_ID']=='69'
-    out=ROOT/'results/map_visual_20260916';out.mkdir(exist_ok=True)
+    out=Path(os.environ.get('T3_TEST_RESULTS',ROOT/'results/map_visual_20260916'));out.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='map_visual_') as temporary:
         tmp=Path(temporary);cfg=yaml.safe_load((ROOT/'config/simulation_live.yaml').read_text())
-        cfg.update(map_window=32.,tile_cells=32,semantic_topic='',map_publish_period=100.,global_publish_period=100.)
+        classify=os.environ.get('T3_TEST_CLASSIFICATION','0')=='1'
+        cfg['publish_terrain_classification']=classify
+        cfg.update(map_window=64.,tile_cells=32,semantic_topic='',map_publish_period=100.,global_publish_period=100.,
+                   min_system_available_mib=0)
         profile=tmp/'profile.yaml';profile.write_text(yaml.safe_dump(cfg))
         rclpy.init(args=['--ros-args','-p','profile_path:='+str(profile),'-p','output_dir:='+str(tmp/'map')])
         mapper=TerrainMapper();monitor=ui.Monitor();driver=rclpy.create_node('isolated_planning_fixture')
@@ -43,6 +47,7 @@ def main():
         trace=driver.create_publisher(RosPath,'/T3/semantic/trajectory',retained)
         goals=[];driver.create_subscription(PoseStamped,'/Car/T4/rviz_goal',goals.append,10)
         grids=deque(maxlen=2);driver.create_subscription(GridMap,'/T3/mapping/global_grid_map',grids.append,retained)
+        local_grids=deque(maxlen=2);driver.create_subscription(GridMap,'/Car/T3/mapping/grid_map',local_grids.append,retained)
         window=None;stop=threading.Event()
         def drain(seconds):
             end=time.monotonic()+seconds
@@ -64,16 +69,39 @@ def main():
             drain(.5);started=time.monotonic();mapper.publish();mapper.publish_global();publication=time.monotonic()-started
             trace.publish(path([(-4.,0.),(-2.,0.),(0.,0.)]));routes['global'].publish(path([(0,0),(0,3),(3,3)]));routes['local'].publish(path([(0,0),(0,1),(0,2)]))
             drain(.8)
-            assert grids and {'elevation','occupancy','obstacle','traversability'}.issubset(grids[-1].layers)
+            assert grids and 'elevation' in grids[-1].layers
+            assert local_grids and local_grids[-1].info.length_x==64. and local_grids[-1].info.length_y==64.
+            assert tuple(d.size for d in local_grids[-1].data[0].layout.dim)==(320,320)
             assert monitor.grid and monitor.display_points>0
-            assert np.any(np.all(np.array(monitor.grid[0])==0,axis=2)), 'Global obstacles were not rendered black'
-            assert not monitor.request_goal(2.05,.05,0.), 'Obstacle goal accepted'
+            if classify:
+                assert {'occupancy','obstacle','traversability'}.issubset(grids[-1].layers)
+                assert np.any(np.all(np.array(monitor.grid[0])==0,axis=2)), 'Global obstacles were not rendered black'
+                assert not monitor.request_goal(2.05,.05,0.), 'Obstacle goal accepted'
+            else:
+                assert monitor.obstacle_data is None
+                assert set(grids[-1].layers)=={'elevation','elevation_variance','observation_count'}
             assert not monitor.request_goal(100.,100.,0.), 'Unknown goal accepted'
-            assert len(monitor.planning_paths['global'])==3 and len(monitor.planning_paths['local'])==3
+            assert 'global' not in monitor.planning_paths and len(monitor.planning_paths['local'])==3
+            # A retained zero-stamp route predating the display is not reused.
+            shadow=ui.Monitor();executor.add_node(shadow);drain(.3)
+            assert not shadow.planning_paths
+            executor.remove_node(shadow);shadow.destroy_node()
+            broadcaster=StaticTransformBroadcaster(driver)
+            transform=TransformStamped();transform.header.frame_id='map';transform.child_frame_id='planner_path_test'
+            transform.header.stamp=driver.get_clock().now().to_msg()
+            transform.transform.translation.x=10.;transform.transform.translation.y=-4.
+            transform.transform.rotation.z=math.sqrt(.5);transform.transform.rotation.w=math.sqrt(.5)
+            broadcaster.sendTransform(transform);drain(.2)
+            rotated=path([(0,0),(1,0)]);rotated.header.frame_id='planner_path_test'
+            for pose in rotated.poses:pose.header.frame_id='planner_path_test'
+            routes['local'].publish(rotated);drain(.3)
+            np.testing.assert_allclose(monitor.planning_paths['local'],[[10,-4,0],[10,-3,0]],atol=1e-6)
+            routes['local'].publish(path([(0,0),(0,1),(0,2)]));drain(.2)
             if os.environ.get('DISPLAY'):
                 window=ui.Window(monitor,stop);window.root.geometry('785x985+20+20');drain(.4);window.redraw()
                 assert window.follow_vehicle
                 center,scale=window.current_view
+                np.testing.assert_allclose(scale,min(window.canvas.winfo_width()-70,window.canvas.winfo_height()-60)/32.)
                 np.testing.assert_allclose(center,[0.,0.])
                 np.testing.assert_allclose(window.pixel_to_map(window.canvas.winfo_width()/2,window.canvas.winfo_height()/2),center)
                 window.toggle_goal();center,scale=window.current_view
@@ -114,11 +142,26 @@ def main():
                 window.follow_view();window.redraw();drain(.1)
             routes['local'].publish(path([]));drain(.2)
             assert len(monitor.planning_paths['local'])==0
-            # Explicit global invalidation clears obsolete image and goal checks.
+            # Memory pressure invalidates only global; local remains displayed.
+            mapper.pressure=True;mapper.publish_global()
+            drain(.3);assert monitor.grid is not None and monitor.grid_source=='local'
+            assert monitor.grid_frame=='odom'
+            assert monitor.request_goal(3.,3.,0.)
+            # The existing P4 goal contract remains map; P3 map->odom is identity.
+            drain(.3);assert len(goals)==2 and goals[-1].header.frame_id=='map'
+            np.testing.assert_allclose([goals[-1].pose.position.x,goals[-1].pose.position.y],[3.,3.])
+            mapper.pressure=False;mapper.publish_global()
+            drain(.3);assert monitor.grid_source=='global'
+            monitor.on_status(String(data=json.dumps({'height_bias':{'map_update_allowed':False}})))
+            assert not monitor.request_goal(3,3,0), 'Map pause was hidden by valid localization'
+            monitor.on_status(String(data=json.dumps({'height_bias':{'map_update_allowed':True}})))
             for publisher in mapper.global_pubs:publisher.publish(GridMap())
-            drain(.3);assert monitor.grid is None
+            for publisher in mapper.grid_pubs:publisher.publish(GridMap())
+            drain(.3);assert monitor.grid is None and monitor.grid_source==''
             assert not monitor.request_goal(3,3,0)
             result=dict(passed=True,gui_tested=window is not None,operator_goals=len(goals),
+                elevation_only=not classify,
+                local_fallback_and_global_recovery=True,
                 localization_health_display_and_goal_checks=True,
                 global_layers=list(grids[0].layers),display_points=monitor.display_points,
                 initial_map_publication_sec=publication,ui_loop_p95_sec=float(np.percentile(intervals,95)),

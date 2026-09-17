@@ -5,7 +5,7 @@ from .disk_map import configure_sqlite
 
 
 class BoundedCloudStore(VoxelCloudStore):
-    def __init__(self, path, voxel_size, preview_points=150000, preview_voxel=.3):
+    def __init__(self, path, voxel_size, preview_points=150000, preview_voxel=.3, separate_preview=False):
         super().__init__(path, voxel_size)
         configure_sqlite(self.connection, cache_mib=16)
         self.preview_cap = int(preview_points)
@@ -17,8 +17,21 @@ class BoundedCloudStore(VoxelCloudStore):
         self.sweep_rowid=0
         if self.preview_cap < 1:
             raise ValueError("preview_points must be positive")
+        # Persist display eligibility separately from measured geometry. Hidden
+        # edge points remain available to elevation, export and column rebuilds.
+        existing = self.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='preview_voxels'").fetchone()
+        self.separate_preview = bool(separate_preview or existing)
+        if self.separate_preview and not existing:
+            with self.connection:
+                self.connection.execute('CREATE TABLE preview_voxels('
+                    'ix INTEGER,iy INTEGER,iz INTEGER,PRIMARY KEY(ix,iy,iz)) WITHOUT ROWID')
+                # Legacy stores already contained only the visible subset.
+                self.connection.execute('INSERT INTO preview_voxels SELECT ix,iy,iz FROM voxels')
         # Restart/export-view path, streamed; normal new runs start empty.
-        cursor = self.connection.execute("SELECT x,y,z FROM voxels")
+        query = ('SELECT v.x,v.y,v.z FROM voxels v JOIN preview_voxels p USING(ix,iy,iz)'
+                 if self.separate_preview else 'SELECT x,y,z FROM voxels')
+        cursor = self.connection.execute(query)
         while True:
             rows = cursor.fetchmany(8192)
             if not rows:
@@ -54,9 +67,23 @@ class BoundedCloudStore(VoxelCloudStore):
             keys, points, rank = keys[ix], points[ix], rank[ix]
         self.keys, self.sample, self.rank = keys, points, rank
 
-    def append(self, points):
+    def append(self, points, preview_mask=None):
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        if preview_mask is not None:
+            mask = np.asarray(preview_mask)
+            if not self.separate_preview or mask.dtype != np.bool_ or mask.shape != (len(points),):
+                raise ValueError('A boolean preview mask requires separate_preview and one value per point')
+            visible = points[mask]
+        else:
+            visible = points
         added = super().append(points)
-        self.observe(points)
+        visible = visible[np.isfinite(visible).all(axis=1)]
+        if self.separate_preview:
+            keys = np.unique(np.floor(visible/self.voxel_size).astype(np.int64), axis=0)
+            with self.connection:
+                self.connection.executemany('INSERT OR IGNORE INTO preview_voxels VALUES(?,?,?)',
+                    (tuple(map(int, key)) for key in keys))
+        self.observe(visible)
         return added
 
     def preview(self, max_points=None):
@@ -95,6 +122,10 @@ class BoundedCloudStore(VoxelCloudStore):
             self.connection.executemany('DELETE FROM voxels WHERE rowid=? AND ix=? AND iy=? AND iz=?',
                 (tuple(map(int,row[:4])) for row in rows))
             self.count-=self.connection.total_changes-before
+            if self.separate_preview:
+                self.connection.executemany('DELETE FROM preview_voxels WHERE ix=? AND iy=? AND iz=? '
+                    'AND NOT EXISTS(SELECT 1 FROM voxels WHERE ix=? AND iy=? AND iz=?)',
+                    (tuple(map(int,row[1:4]))*2 for row in rows))
         deleted={tuple(row[1:4].astype(np.int64)) for row in rows}
         keep=np.array([tuple(k) not in deleted for k in np.floor(self.sample/self.voxel_size).astype(np.int64)],dtype=bool)
         self.sample,self.keys,self.rank=self.sample[keep],self.keys[keep],self.rank[keep]
@@ -118,5 +149,5 @@ class BoundedCloudStore(VoxelCloudStore):
         self.connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
     def memory_stats(self):
-        return dict(preview_points=len(self.sample),
+        return dict(preview_points=len(self.sample),preview_separate=self.separate_preview,
             preview_array_mib=(self.sample.nbytes+self.keys.nbytes+self.rank.nbytes)/2**20)

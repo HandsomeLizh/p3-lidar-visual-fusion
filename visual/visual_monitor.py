@@ -16,14 +16,16 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.signals import SignalHandlerOptions
 from geometry_msgs.msg import Point, TransformStamped, PoseStamped
-from tf2_ros import StaticTransformBroadcaster
+from tf2_ros import StaticTransformBroadcaster,Buffer,TransformListener,TransformException
+from rclpy.time import Time
+from scipy.spatial.transform import Rotation
 from grid_map_msgs.msg import GridMap
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import Image, PointCloud2, PointField
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 from t3_semantic_mapping.lidar_mapping import pointcloud2_xyz_array
-from visual_style import display_sample, expand_height_limits, height_colors, localization_status, UNKNOWN_COLOR
+from visual_style import display_sample, expand_height_limits, height_colors, localization_status, UNKNOWN_COLOR, GridSourceCache, planning_points_in_map
 
 
 def write_visual_state(name, value):
@@ -62,6 +64,9 @@ class Monitor(Node):
         self.fusion_health_at = 0.
         self.cloud_status = {}
         self.grid = None
+        self.grid_sources = GridSourceCache()
+        self.grid_source = ''
+        self.grid_stamp = None
         self.thumbnails = {}
         self.display_points = 0
         self.counter = 0
@@ -79,9 +84,15 @@ class Monitor(Node):
         self.grid_frame = 'map'
         self.planning_paths = {}
         self.planning_revision = 0
+        self.planning_pending=None
+        self.path_tf=Buffer()
+        self.path_tf_listener=TransformListener(self.path_tf,self)
+        self.create_timer(.25,self.update_planning_path)
         self.goal_requested = None
         self.last_goal = None
         self.goal_status = '点击“设置目标”，在已观测的可通行栅格上拖动指定朝向'
+        self.allow_goals = os.environ.get('T3_VISUAL_ALLOW_GOALS','1') != '0'
+        if not self.allow_goals:self.goal_status='本次为手动驾驶测试，请使用原车辆控制窗口'
         self.create_timer(.1, self.send_requested_goal)
         self.create_timer(.25, self.apply_color_mode)
         # Keep the fixed map frame available even before the first estimate.
@@ -98,12 +109,16 @@ class Monitor(Node):
         self.marker_pub = self.create_publisher(MarkerArray, '/T3/demo/markers', retained)
         # Goals must never be latched/replayed when a planning node reconnects.
         self.goal_pub = self.create_publisher(PoseStamped, '/Car/T4/rviz_goal', live)
-        for label,topic in [('global','/Car/T4/planning/global_route'),('local','/Car/T4/planning/local_path')]:
-            self.create_subscription(Path,topic,lambda msg,key=label:self.on_planning_path(key,msg),retained)
+        # P4 paths currently carry a zero header stamp. Receive new publications
+        # only: a latched path from a previous P3 origin must not be drawn here.
+        self.create_subscription(Path,'/Car/T4/planning/local_path',
+                                 lambda msg:self.on_planning_path('local',msg),live)
         self.create_subscription(Path, '/T3/semantic/trajectory', self.on_path, retained)
         self.create_subscription(Odometry, '/T3/semantic/current_pose', self.on_pose, live)
         self.create_subscription(PointCloud2, '/T3/mapping/lidar_map', self.on_cloud, retained)
         self.create_subscription(GridMap, '/T3/mapping/global_grid_map', self.on_grid, retained)
+        self.create_subscription(GridMap, '/Car/T3/mapping/grid_map',
+                                 lambda msg: self.on_grid(msg, source='local'), retained)
         self.create_subscription(String, '/T3/mapping/lidar_status', self.on_status, retained)
         self.create_subscription(String, '/Car/T3/metrics/frame_timing', self.on_timing, live)
         self.create_subscription(String, '/fusion/status', self.on_fusion_health, live)
@@ -178,28 +193,34 @@ class Monitor(Node):
         with self.lock:
             self.thumbnails[side] = thumbnail
 
-    def on_grid(self, message):
+    def on_grid(self, message, source='global'):
         if 'elevation' not in message.layers or message.outer_start_index or message.inner_start_index:
-            with self.lock:
-                self.elevation_data=None;self.obstacle_data=None;self.grid=None
-                self.last_grid_token=None
+            self.select_grid(source, None)
             return
         layer = message.data[list(message.layers).index('elevation')]
+        if len(layer.layout.dim) != 2:
+            self.select_grid(source, None)
+            raise ValueError('Grid requires two dimensions')
         ny, nx = (int(d.size) for d in layer.layout.dim)
         if nx<=0 or ny<=0 or nx*ny>1000000 or not np.isfinite(message.info.resolution) or message.info.resolution<=0:
+            self.select_grid(source, None)
             raise ValueError('Grid geometry exceeds display limits')
         if len(message.data)>16 or any(len(d.data)!=nx*ny for d in message.data):
+            self.select_grid(source, None)
             raise ValueError('Malformed grid layers')
         token=(message.header.frame_id,nx,ny,message.info.resolution,message.info.length_x,message.info.length_y,
                message.info.pose.position.x,message.info.pose.position.y,tuple(message.layers),
                tuple(zlib.crc32(memoryview(d.data)) for d in message.data))
-        if token==self.last_grid_token:return
+        stamp = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+        cached = self.grid_sources.maps[source]
+        if cached is not None and token == cached['token']:
+            cached['stamp'] = stamp
+            self.select_grid(source, cached)
+            return
         elevation = np.flip(np.asarray(layer.data, dtype=np.float32).reshape(ny, nx), axis=(0, 1))
         valid = np.isfinite(elevation)
         if not valid.any():
-            with self.lock:
-                self.elevation_data=None;self.obstacle_data=None;self.grid=None
-                self.last_grid_token=None
+            self.select_grid(source, None)
             return
         obstacle=np.zeros(elevation.shape,dtype=bool)
         occupancy=np.full(elevation.shape,np.nan,dtype=np.float32)
@@ -211,16 +232,30 @@ class Monitor(Node):
             data=message.data[list(message.layers).index('obstacle')]
             explicit=np.flip(np.asarray(data.data,dtype=np.float32).reshape(ny,nx),axis=(0,1))
             obstacle=np.isfinite(explicit)&(explicit>.5)
-        previous = self.height_limits
-        self.full_height_limits = expand_height_limits(elevation, self.full_height_limits)
         geometry = (message.info.pose.position.x - message.info.length_x / 2,
                     message.info.pose.position.y - message.info.length_y / 2,
                     message.info.resolution, nx, ny)
+        self.select_grid(source, dict(elevation=(elevation, geometry, int(valid.sum())),
+            obstacle=(obstacle,occupancy) if ('occupancy' in message.layers or 'obstacle' in message.layers) else None,
+            frame=message.header.frame_id, token=token, stamp=stamp))
+
+    def select_grid(self, source, payload):
+        selected, active = self.grid_sources.update(source, payload)
         with self.lock:
-            self.elevation_data = (elevation, geometry, int(valid.sum()))
-            self.obstacle_data=(obstacle,occupancy)
-            self.grid_frame=message.header.frame_id
-            self.last_grid_token=token
+            self.grid_source = selected
+            self.grid_stamp = active['stamp'] if active is not None else None
+            if active is None:
+                self.elevation_data=None;self.obstacle_data=None;self.grid=None
+                self.last_grid_token=None;self.last_color_key=None
+                return
+            if self.elevation_data is active['elevation']:
+                return
+            self.elevation_data = active['elevation']
+            self.obstacle_data = active['obstacle']
+            self.grid_frame = active['frame']
+            self.last_grid_token = active['token']
+        previous = self.height_limits
+        self.full_height_limits = expand_height_limits(self.elevation_data[0], self.full_height_limits)
         self.update_color_limits()
         self.recolor_grid()
         if previous != self.height_limits and self.cloud_points is not None:
@@ -268,19 +303,45 @@ class Monitor(Node):
             self.grid = (bitmap, geometry, known, lo, hi, self.contrast_enabled)
 
     def on_planning_path(self, label, message):
-        # P3 publishes map->odom identity; both are the agreed planning frames.
-        points=[]
-        if message.header.frame_id in ('map','odom'):
-            poses=message.poses
-            for i in np.linspace(0,len(poses)-1,min(len(poses),10000),dtype=int) if poses else []:
-                p=poses[i].pose.position
-                if np.isfinite([p.x,p.y,p.z]).all():points.append((p.x,p.y,p.z))
+        if label!='local':return
+        self.planning_pending=(message,time.monotonic())
+        self.update_planning_path()
+
+    def lookup_path_transform(self,frame,stamp_ns):
+        try:result=self.path_tf.lookup_transform('map',frame,Time(nanoseconds=int(stamp_ns)))
+        except TransformException as error:raise ValueError('Path TF unavailable: '+frame+' -> map') from error
+        t=result.transform;quaternion=np.array([t.rotation.x,t.rotation.y,t.rotation.z,t.rotation.w])
+        if not np.isfinite(quaternion).all() or abs(np.linalg.norm(quaternion)-1.)>.001:
+            raise ValueError('Invalid path TF rotation')
+        matrix=np.eye(4);matrix[:3,:3]=Rotation.from_quat(quaternion).as_matrix()
+        matrix[:3,3]=[t.translation.x,t.translation.y,t.translation.z]
+        return matrix
+
+    def update_planning_path(self):
+        pending=self.planning_pending
+        if pending is None:return
+        message,received=pending
+        try:
+            points=planning_points_in_map(message,self.lookup_path_transform)
+            reason='ready' if len(points) else 'empty'
+            self.planning_pending=None
+        except ValueError as error:
+            points=np.empty((0,3));reason=str(error)
+            if not reason.startswith('Path TF unavailable') or time.monotonic()-received>2.:
+                self.planning_pending=None
         with self.lock:
-            self.planning_paths[label]=np.asarray(points,dtype=float).reshape(-1,3)
-            self.planning_revision+=1
+            previous=self.planning_paths.get('local')
+            if previous is None or not np.array_equal(previous,points):
+                self.planning_paths['local']=points
+                self.planning_revision+=1
+        write_visual_state('path_overlay_status.json',dict(reason=reason,frame=message.header.frame_id,
+            display_frame='map',points=len(points),global_path_displayed=False))
 
     def request_goal(self,x,y,yaw):
         with self.lock:
+            if not self.allow_goals:return False
+            if self.cloud_status.get('height_bias',{}).get('map_update_allowed') is False:
+                self.goal_status='新旧高度不一致，地图入图暂停，未发送目标';return False
             if self.localization_unavailable():
                 self.goal_status='定位暂不可用，未发送目标';return False
             if not np.isfinite([x,y,yaw]).all() or self.elevation_data is None or self.grid_frame not in ('map','odom'):
@@ -289,10 +350,13 @@ class Monitor(Node):
             col,row=int(math.floor((x-ox)/res)),int(math.floor((y-oy)/res))
             if not (0<=row<ny and 0<=col<nx) or not np.isfinite(elevation[row,col]):
                 self.goal_status='目标位于未观测区域，未发送';return False
-            if self.obstacle_data is None or not np.isfinite(self.obstacle_data[1][row,col]):
-                self.goal_status='目标栅格通行性未知，未发送';return False
-            if self.obstacle_data[0][row,col]:
-                self.goal_status='目标位于黑色障碍格，未发送';return False
+            # Elevation-only P3 maps leave vehicle clearance and feasibility to P4.
+            # When a classification layer is present, preserve its older guard.
+            if self.obstacle_data is not None:
+                if not np.isfinite(self.obstacle_data[1][row,col]):
+                    self.goal_status='目标栅格通行性未知，未发送';return False
+                if self.obstacle_data[0][row,col]:
+                    self.goal_status='目标位于黑色障碍格，未发送';return False
             self.goal_requested=(float(x),float(y),float(yaw),float(elevation[row,col]),time.monotonic())
             self.goal_status='正在发送目标到 P4'
             return True
@@ -300,6 +364,8 @@ class Monitor(Node):
     def send_requested_goal(self):
         with self.lock:
             goal,self.goal_requested=self.goal_requested,None
+            if goal is not None and self.cloud_status.get('height_bias',{}).get('map_update_allowed') is False:
+                self.goal_status='地图入图已暂停，未发送目标';return
             if goal is not None and self.localization_unavailable():
                 self.goal_status='定位暂不可用，未发送目标';return
         if goal is None:return
@@ -384,7 +450,9 @@ class Window:
         tk.Button(map_header, text='跟车 32 m', command=self.follow_view).pack(side='right',padx=4)
         self.goal_button=tk.Button(map_header,text='设置目标',command=self.toggle_goal)
         self.goal_button.pack(side='right',padx=6)
-        tk.Label(self.root, text='平时左拖平移 · 设置目标后按下选点、拖动朝向、松开发送给 P4',
+        if not self.node.allow_goals:self.goal_button.config(state='disabled')
+        tk.Label(self.root, text=('平时左拖平移 · 设置目标后按下选点、拖动朝向、松开发送给 P4'
+                 if self.node.allow_goals else '左拖平移 · 滚轮缩放 · 当前测试未接入 P4 行驶'),
                  bg='#111823', fg='#b9c9dc', anchor='w').pack(fill='x', padx=20)
         self.goal_label=tk.Label(self.root,text='',bg='#111823',fg='#f0cd78',anchor='w',wraplength=720)
         self.goal_label.pack(fill='x',padx=20)
@@ -549,6 +617,10 @@ class Window:
             unavailable=self.node.localization_unavailable()
             output_source=(self.node.fusion_health or {}).get('output_source')
             output_preference=(self.node.fusion_health or {}).get('pose_source_preference')
+            localization_reason=(self.node.fusion_health or {}).get('localization_reason')
+            stationary_state=(self.node.fusion_health or {}).get('stationary',{}).get('state')
+            mapping_sources=cloud.get('mapping_sources',(self.node.fusion_health or {}).get('mapping_sources',[]))
+            grid_source,grid_stamp=self.node.grid_source,self.node.grid_stamp
         self.goal_label.config(text=('选点模式：松开鼠标将交给 P4 规划并行驶；Esc 取消' if self.goal_mode else goal_status))
         age = time.monotonic() - pose_at if pose_at else None
         outcome = timing.get('outcome', '')
@@ -566,8 +638,13 @@ class Window:
         label, color = localization_status(age, outcome, bool(path), phase)
         if phase is None and unavailable:
             label,color='定位暂不可用 · 正在恢复','#ffb366'
+            if localization_reason=='visual_origin_reset_restart_required':
+                label='视觉原点已重置 · 原地图已保留，请重新启动本次测试'
         elif phase is None and output_source=='visual' and age is not None:
             name='视觉优先定位' if output_preference=='visual' else '视觉接续定位'
+            if output_preference=='visual_only':
+                name='纯视觉定位'
+            if output_preference=='visual_only' and stationary_state=='stationary':name+=' · 静止已确认'
             label,color=f'{name} · 最近更新 {age:.1f} 秒前','#53e0e5'
         self.status.config(text=label, fg=color)
         if path and path.poses:
@@ -579,7 +656,21 @@ class Window:
             cost = f'{elapsed:.2f} s' if isinstance(elapsed, (int, float)) else '—'
             self.detail.config(text=f'航向 {math.degrees(yaw):.1f}°   处理耗时 {cost}   轨迹点 {len(path.poses)}   坐标 {path.header.frame_id}')
             self.draw_map(path, yaw, grid)
-        self.map_label.config(text=f"完整点云 {cloud.get('voxel_count', 0):,} 点 · 显示 {count:,} 点（0.25 m / 上限 10 万）\n绿色：全局规划 · 紫色：局部路径 · 橙色：已行驶轨迹")
+        map_note = '全局高程图' if grid_source=='global' else '局部高程图（全局图暂不可用或未更新）' if grid_source=='local' else '等待高程数据'
+        if mapping_sources==['stereo']:
+            map_note+=' · 仅双目点云建图'
+        elif mapping_sources==['lidar'] and cloud.get('lidar_mapping_crop',{}).get('active',False):
+            crop=cloud['lidar_mapping_crop']
+            soft=any(crop.get(k,0.)>0 for k in ('image_feather_fraction','depth_feather_m','range_feather_m'))
+            map_note+=' · LiDAR 建图（视野边缘渐疏）' if soft else ' · LiDAR 建图（双目视野）'
+        elif mapping_sources:
+            map_note+=' · '+('LiDAR＋双目点云建图' if 'stereo' in mapping_sources else 'LiDAR 建图')
+        if grid_stamp is not None:
+            map_age=max(0.,self.node.get_clock().now().nanoseconds*1e-9-grid_stamp)
+            if map_age>10.:map_note+=f' · 高程观测已 {map_age:.0f} 秒未更新'
+        if cloud.get('height_bias',{}).get('map_update_allowed') is False:
+            map_note+=' · 新旧高度不一致，入图暂停'
+        self.map_label.config(text=f"{map_note}\n完整点云 {cloud.get('voxel_count', 0):,} 点 · 显示 {count:,} 点（上限 10 万）\n紫色：局部路径 · 橙色：已行驶轨迹")
         directory = os.environ.get('T3_VISUAL_RUNTIME')
         if directory:
             settings = FilePath(directory) / 'view_settings.json'
@@ -669,7 +760,7 @@ class Window:
             if round(y/step) % label_every == 0:
                 canvas.create_text(4, py-8, text=f'{y:.0f}', fill='#e1e8f0', anchor='w')
         xy = [project(*point) for point in points]
-        for label,color in [('global','#70ff78'),('local','#ee7cff')]:
+        for label,color in [('local','#ee7cff')]:
             route=routes.get(label)
             if route is not None and len(route)>1:
                 coords=[v for p in route for v in project(p[0],p[1])]

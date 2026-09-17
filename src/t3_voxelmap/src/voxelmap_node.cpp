@@ -5,6 +5,7 @@
 #include "registration_quality.hpp"
 #include "optional_imu.hpp"
 #include "tracking_guard.hpp"
+#include "independent_visual_motion.hpp"
 #include <sensor_msgs/msg/imu.hpp>
 #include <memory>
 #include <rclcpp/rclcpp.hpp>
@@ -57,6 +58,15 @@ class VoxelMapNode : public rclcpp::Node {
     RegistrationQuality quality_;
     bool solver_converged_ = false, solution_stable_ = false;
     double last_translation_correction_ = 0., last_rotation_correction_ = 0.;
+    IndependentVisualMotion independent_visual_;
+    IndependentVisualMotion::Result visual_motion_check_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr independent_visual_input_;
+    bool independent_visual_enabled_=false;
+    double independent_visual_wait_=.45;
+    bool degeneracy_projection_enabled_=false,weak_reference_missing_=false;
+    int weak_directions_=0;
+    RegistrationQuality::M6 observable_projection_=RegistrationQuality::M6::Identity();
+    std::string weak_motion_source_="disabled";
     struct VisualSeed {
         double stamp=0., position_variance=0., rotation_variance=0.;
         Eigen::Matrix4d lidar=Eigen::Matrix4d::Identity();
@@ -68,11 +78,20 @@ class VoxelMapNode : public rclcpp::Node {
     double recovery_cooldown_=5., next_recovery_stamp_=-1.;
     double bridge_position_variance_=0.,bridge_rotation_variance_=0.;
     double candidate_position_variance_=0.,candidate_rotation_variance_=0.;
-    std::deque<VisualSeed> visual_seeds_;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_input_;
+    std::deque<VisualSeed> visual_seeds_, recovery_references_;
+    std::string seed_reason_="not_requested";
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr visual_input_, recovery_input_;
     rclcpp::TimerBase::SharedPtr pending_timer_;
-    sensor_msgs::msg::PointCloud2::ConstSharedPtr pending_cloud_;
-    Clock::time_point pending_since_;
+    struct PendingCloud {
+        sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud;
+        Clock::time_point received;
+    };
+    // One frame being matched to vision plus the newest following frame.
+    // A delayed visual result must not make us discard every subsequent scan.
+    std::deque<PendingCloud> pending_clouds_;
+    size_t pending_peak_=0;
+    double reference_wait_sec_=0.;
+    bool independent_visual_pair_available_=false;
     std::unordered_map<VOXEL_LOC,OctoTree*> backup_map_;
     StatesGroup backup_state_;
     double backup_stamp_=-1.;
@@ -97,10 +116,38 @@ class VoxelMapNode : public rclcpp::Node {
         }
         return best;
     }
-    void visual_seed(const nav_msgs::msg::Odometry::ConstSharedPtr msg) {
+    const char *seed_motion_error(const VisualSeed &seed, double stamp) const {
+        StatesGroup proposed=accepted_state_;
+        proposed.rot_end=seed.lidar.topLeftCorner<3,3>();
+        proposed.pos_end=seed.lidar.topRightCorner<3,1>();
+        proposed.vel_end.setZero();proposed.bias_g.setZero();
+        return tracking_limits_.check(accepted_state_,proposed,stamp-accepted_stamp_,false);
+    }
+    const VisualSeed *recovery_reference_at(double stamp) const {
+        // A far replacement map must follow three poses already accepted by
+        // the formal output guard. A frontend-only seed cannot relocate it.
+        for(size_t i=2;i<recovery_references_.size();++i) {
+            const auto &current=recovery_references_[i];
+            if(std::abs(current.stamp-stamp)>seed_tolerance_)continue;
+            bool continuous=true;
+            for(size_t j=i-1;j<=i;++j) {
+                const auto &a=recovery_references_[j-1], &b=recovery_references_[j];
+                const double dt=b.stamp-a.stamp;
+                const double distance=((b.lidar.topRightCorner<3,1>()+b.lidar.topLeftCorner<3,3>()*tracking_limits_.body_origin_in_sensor)-
+                    (a.lidar.topRightCorner<3,1>()+a.lidar.topLeftCorner<3,3>()*tracking_limits_.body_origin_in_sensor)).norm();
+                const double angle=Eigen::AngleAxisd(a.lidar.topLeftCorner<3,3>().transpose()*b.lidar.topLeftCorner<3,3>()).angle();
+                if(dt<=0. || dt>6. || distance>std::min(tracking_limits_.max_step,tracking_limits_.max_speed*dt+.05) ||
+                   angle>std::min(tracking_limits_.max_angle,tracking_limits_.max_angular_speed*dt+.02))continuous=false;
+            }
+            if(continuous)return &current;
+        }
+        return nullptr;
+    }
+    void visual_seed(const nav_msgs::msg::Odometry::ConstSharedPtr msg, bool formal=false) {
         if(msg->header.frame_id!="odom" || msg->child_frame_id!="base_link")return;
+        auto &history=formal?recovery_references_:visual_seeds_;
         VisualSeed seed;seed.stamp=rclcpp::Time(msg->header.stamp).seconds();
-        if(!visual_seeds_.empty() && seed.stamp<=visual_seeds_.back().stamp)return;
+        if(!history.empty() && seed.stamp<=history.back().stamp)return;
         const auto &p=msg->pose.pose;
         Eigen::Quaterniond q(p.orientation.w,p.orientation.x,p.orientation.y,p.orientation.z);
         if(!q.coeffs().allFinite() || std::abs(q.norm()-1.)>1e-3)return;
@@ -118,22 +165,66 @@ class VoxelMapNode : public rclcpp::Node {
         body.topRightCorner<3,1>()=V3D(p.position.x,p.position.y,p.position.z);
         seed.lidar=base_from_lidar_.inverse()*body*base_from_lidar_;
         if(!seed.lidar.allFinite())return;
-        visual_seeds_.push_back(seed);
-        while(visual_seeds_.size()>32 || seed.stamp-visual_seeds_.front().stamp>20.)visual_seeds_.pop_front();
+        history.push_back(seed);
+        while(history.size()>32 || seed.stamp-history.front().stamp>20.)history.pop_front();
         drain_pending();
     }
+    void independent_visual(const nav_msgs::msg::Odometry::ConstSharedPtr msg) {
+        if(msg->child_frame_id!="base_link")return;
+        IndependentVisualMotion::Sample sample;
+        sample.stamp=rclcpp::Time(msg->header.stamp).seconds();sample.epoch=msg->header.frame_id;
+        const auto &p=msg->pose.pose;
+        Eigen::Quaterniond q(p.orientation.w,p.orientation.x,p.orientation.y,p.orientation.z);
+        Eigen::Matrix<double,6,6> cov;
+        for(int i=0;i<6;++i)for(int j=0;j<6;++j)cov(i,j)=msg->pose.covariance[i*6+j];
+        sample.body.topRightCorner<3,1>()=V3D(p.position.x,p.position.y,p.position.z);
+        if(q.coeffs().allFinite() && std::abs(q.norm()-1.)<1e-3 && sample.body.allFinite() &&
+           cov.allFinite() && (cov-cov.transpose()).norm()<1e-6) {
+            sample.body.topLeftCorner<3,3>()=q.normalized().toRotationMatrix();
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double,6,6>> eigen(cov);
+            sample.valid=eigen.info()==Eigen::Success && eigen.eigenvalues().minCoeff()>=0. &&
+                cov.topLeftCorner<3,3>().diagonal().maxCoeff()<=.04 &&
+                cov.bottomRightCorner<3,3>().diagonal().maxCoeff()<=.02 && cov.trace()>0.;
+            sample.epoch_origin=sample.epoch.rfind("learned_epoch_",0)==0 &&
+                eigen.info()==Eigen::Success && eigen.eigenvalues().minCoeff()>=1e5 &&
+                sample.body.isApprox(Eigen::Matrix4d::Identity(),1e-8);
+        }
+        independent_visual_.observe(sample);drain_pending();
+    }
     void receive_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
-        if(recovery_enabled_ && !imu_->active() && (candidate_active_ || consecutive_failures_>0)) {
-            if(pending_cloud_){++pending_dropped_;return;}
-            if(msg->data.size()>16000000 || size_t(msg->width)*msg->height>size_t(max_input_))return;
-            pending_cloud_=msg;pending_since_=Clock::now();drain_pending();
-        } else scan(msg);
+        if(msg->data.size()>16000000 || size_t(msg->width)*msg->height>size_t(max_input_))return;
+        const double stamp=rclcpp::Time(msg->header.stamp).seconds();
+        if(stamp<=last_stamp_ || (!pending_clouds_.empty() &&
+           stamp<=rclcpp::Time(pending_clouds_.back().cloud->header.stamp).seconds()))return;
+        const bool needs_reference=!imu_->active() && (independent_visual_enabled_ ||
+             (recovery_enabled_ && (candidate_active_ || consecutive_failures_>0)));
+        if(needs_reference || !pending_clouds_.empty()) {
+            PendingCloud pending{msg,Clock::now()};
+            if(pending_clouds_.size()==2) {
+                pending_clouds_.back()=pending;++pending_dropped_;
+            } else pending_clouds_.push_back(pending);
+            pending_peak_=std::max(pending_peak_,pending_clouds_.size());
+            drain_pending();
+        } else {reference_wait_sec_=0.;scan(msg);}
     }
     void drain_pending() {
-        if(!pending_cloud_)return;
-        double stamp=rclcpp::Time(pending_cloud_->header.stamp).seconds();
-        if(!seed_at(stamp) && seconds(pending_since_,Clock::now())<seed_wait_)return;
-        auto cloud=pending_cloud_;pending_cloud_.reset();scan(cloud);
+        if(pending_clouds_.empty())return;
+        const auto &pending=pending_clouds_.front();
+        double stamp=rclcpp::Time(pending.cloud->header.stamp).seconds();
+        const double waited=seconds(pending.received,Clock::now());
+        if(!imu_->active() && independent_visual_enabled_ &&
+           !independent_visual_.at(stamp) && waited<independent_visual_wait_)return;
+        const bool recovering=!imu_->active() && recovery_enabled_ && (candidate_active_ || consecutive_failures_>0);
+        const VisualSeed *seed=seed_at(stamp);
+        bool ready=!recovering || seed!=nullptr;
+        Eigen::Matrix4d previous=Eigen::Matrix4d::Identity(),expected;
+        previous.topLeftCorner<3,3>()=accepted_state_.rot_end;previous.topRightCorner<3,1>()=accepted_state_.pos_end;
+        if(!candidate_active_ && independent_visual_.prediction(accepted_stamp_,stamp,previous,base_from_lidar_,expected))ready=true;
+        if(seed && seed_motion_error(*seed,stamp) &&
+           consecutive_failures_+1>=size_t(recovery_trigger_) && !recovery_reference_at(stamp))ready=false;
+        if(!ready && waited<seed_wait_)return;
+        auto cloud=pending.cloud;pending_clouds_.pop_front();
+        reference_wait_sec_=waited;scan(cloud);
     }
     void abort_candidate(double stamp) {
         clear_map(map_);map_.swap(backup_map_);
@@ -211,7 +302,7 @@ class VoxelMapNode : public rclcpp::Node {
     }
     bool update(const PointCloudXYZI &cloud,const std::vector<M3D> &body_cov,
                 double &matching, double &solving, int &iterations,
-                const StatesGroup *independent_prior=nullptr) {
+                const StatesGroup *independent_prior=nullptr,const StatesGroup *motion_anchor=nullptr) {
         // A visual seed changes only the nonlinear starting point, not the
         // likelihood or CV/IMU prior of an existing LiDAR map.
         StatesGroup prior=independent_prior?*independent_prior:state_;
@@ -262,10 +353,6 @@ class VoxelMapNode : public rclcpp::Node {
             Eigen::Matrix<double,18,1> difference=prior-state_;
             Eigen::Matrix<double,18,1> delta=gain*residual+difference-gain*h*difference.head<6>();
             if (!delta.allFinite()) return false;
-            last_rotation_correction_=delta.head<3>().norm();
-            last_translation_correction_=delta.segment<3>(3).norm();
-            state_+=delta;
-            if(!imu_->physically_valid(state_))return false;
             quality_.reset();
             Eigen::MatrixXd ordered(h.rows(),6);
             ordered.leftCols<3>()=h.rightCols<3>();ordered.rightCols<3>()=h.leftCols<3>();
@@ -274,18 +361,37 @@ class VoxelMapNode : public rclcpp::Node {
             permutation.topRightCorner<3,3>().setIdentity();
             permutation.bottomLeftCorner<3,3>().setIdentity();
             quality_.set_weighted_information(permutation*(htr*h)*permutation.transpose());
+            if(degeneracy_projection_enabled_) {
+                // Hold the subspace fixed through this solve to avoid rank
+                // toggling between iterations. Re-evaluate on the next scan.
+                if(iteration==0)observable_projection_=quality_.observable_projection(weak_directions_);
+                if(weak_directions_>0) {
+                    if(!motion_anchor){weak_reference_missing_=true;return false;}
+                    const auto projection=permutation*observable_projection_*permutation;
+                    StatesGroup anchor=*motion_anchor;
+                    const Eigen::Matrix<double,18,1> to_anchor=anchor-state_;
+                    delta.head<6>()=to_anchor.head<6>()+projection*(delta.head<6>()-to_anchor.head<6>());
+                }
+            }
+            last_rotation_correction_=delta.head<3>().norm();
+            last_translation_correction_=delta.segment<3>(3).norm();
+            state_+=delta;
+            if(!imu_->physically_valid(state_))return false;
             solving+=seconds(start,Clock::now());
             iterations=iteration+1;
             bool converged=last_rotation_correction_*57.3<.01 && last_translation_correction_*100<.015;
             converged_updates=converged ? converged_updates+1 : 0;
             if (converged_updates>=2) {solver_converged_=true;break;}
         }
-        // Reaching an iteration budget is not evidence of a solved registration.
-        // A limited solve may be retained only once its remaining correction is
-        // below the configured measurement noise in both translation and angle.
-        solution_stable_=last_translation_correction_<=range_noise_ &&
-                         last_rotation_correction_<=angle_noise_/57.29577951308232;
+        // Measurement noise is not a convergence tolerance. In particular, a
+        // high inlier ratio on flat ground can coexist with centimetres of
+        // remaining optimizer motion and a large incorrect planar displacement.
+        // Only the two consecutive converged iterations above validate a solve.
+        solution_stable_=solver_converged_;
         if(!solution_stable_ || !quality_.registration_usable())return false;
+        // Retain the numerical registration posterior for the next association
+        // solve. Published uncertainty below explicitly removes confidence in
+        // excluded directions; this local posterior is not an accuracy claim.
         state_.cov=.5*(posterior+posterior.transpose());
         return true;
     }
@@ -313,7 +419,15 @@ class VoxelMapNode : public rclcpp::Node {
             RegistrationQuality::M6 permutation=RegistrationQuality::M6::Zero();
             permutation.topRightCorner<3,3>().setIdentity();
             permutation.bottomLeftCorner<3,3>().setIdentity();
-            const auto geometry=quality_.directional_covariance();
+            RegistrationQuality::M6 geometry=quality_.directional_covariance();
+            if(degeneracy_projection_enabled_ && weak_directions_>0) {
+                const RegistrationQuality::M6 weak=RegistrationQuality::M6::Identity()-observable_projection_;
+                const RegistrationQuality::M6 d=quality_.scaling();
+                // Vision already supplies its own EKF measurement. The copied
+                // weak motion must not masquerade as independent LiDAR evidence.
+                geometry=observable_projection_*geometry*observable_projection_.transpose()+
+                    100.*weak*d*d*weak.transpose();
+            }
             cov+=j*permutation*geometry*permutation.transpose()*j.transpose();
         }
         if (!reliable) cov.diagonal().array()+=1e6;
@@ -333,6 +447,8 @@ class VoxelMapNode : public rclcpp::Node {
             << ",\"last_translation_correction_m\":" << last_translation_correction_
             << ",\"last_rotation_correction_rad\":" << last_rotation_correction_
             << ",\"legacy_full_rank_test\":" << (quality_.reliable()?"true":"false")
+            << ",\"weak_directions\":" << weak_directions_
+            << ",\"weak_motion_source\":\"" << weak_motion_source_ << "\""
             << ",\"covariance_basis\":\"prior_plus_noise_weighted_directional_geometry\""
             << ",\"translation_eigen_ratio\":" << quality_.translation_ratio()
             << ",\"pose_eigen_ratio\":" << quality_.pose_ratio() << "}";
@@ -358,13 +474,23 @@ class VoxelMapNode : public rclcpp::Node {
              << ",\"tracking_reason\":\"" << tracking_reason_ << "\""
              << ",\"consecutive_failures\":" << consecutive_failures_
              << ",\"visual_seed_used\":" << (used_visual_seed_?"true":"false")
+             << ",\"visual_seed_reason\":\"" << seed_reason_ << "\""
              << ",\"submap_id\":" << submap_id_ << ",\"submap_candidate\":" << (candidate_active_?"true":"false")
              << ",\"submap_confirmed_scans\":" << candidate_good_
              << ",\"recovery_attempts\":" << recovery_attempts_ << ",\"recovery_aborts\":" << recovery_aborts_
              << ",\"pending_dropped\":" << pending_dropped_
+             << ",\"pending_depth\":" << pending_clouds_.size()
+             << ",\"pending_peak\":" << pending_peak_
+             << ",\"reference_wait_sec\":" << reference_wait_sec_
+             << ",\"independent_visual_pair_available\":" << (independent_visual_pair_available_?"true":"false")
              << ",\"match_ratio\":" << quality_.match_ratio() << ",\"residual_rms_m\":" << quality_.residual_rms()
              << ",\"estimated_speed_mps\":" << state_.vel_end.norm()
              << ",\"position\":[" << state_.pos_end.x() << "," << state_.pos_end.y() << "," << state_.pos_end.z() << "]"
+             << ",\"independent_visual_reason\":\"" << visual_motion_check_.reason << "\""
+             << ",\"independent_visual_translation_error_m\":" << visual_motion_check_.translation_error
+             << ",\"independent_visual_rotation_error_rad\":" << visual_motion_check_.rotation_error
+             << ",\"weak_directions\":" << weak_directions_
+             << ",\"weak_motion_source\":\"" << weak_motion_source_ << "\""
              << ",\"roots\":" << map_.size() << ",\"evicted_roots\":" << evicted_
              << ",\"failures\":" << failures_ << ",\"peak_rss_mib\":" << usage.ru_maxrss/1024. << "}";
         std::string record=text.str();record.pop_back();
@@ -405,26 +531,71 @@ class VoxelMapNode : public rclcpp::Node {
             M3D c;calcBodyCov(p,range_noise_,angle_noise_,c);body_cov.push_back(c);}
         double matching=0.,solving=0.;int iterations=0;
         StatesGroup propagated=state_;
-        used_visual_seed_=false;
+        used_visual_seed_=false;seed_reason_="not_requested";
         const VisualSeed *seed=(recovery_enabled_ && !using_imu &&
             (candidate_active_ || consecutive_failures_>0))?seed_at(stamp):nullptr;
         if(candidate_active_ && !seed) {
             abort_candidate(stamp);propagated=state_;
         }
+        const VisualSeed *bridge=recovery_reference_at(stamp);
+        if(seed && bridge && ((seed->lidar.topRightCorner<3,1>()-bridge->lidar.topRightCorner<3,1>()).norm()>.05 ||
+           Eigen::AngleAxisd(seed->lidar.topLeftCorner<3,3>().transpose()*bridge->lidar.topLeftCorner<3,3>()).angle()>.02))bridge=nullptr;
         if(seed) {
             StatesGroup proposed=state_;
             proposed.rot_end=seed->lidar.topLeftCorner<3,3>();proposed.pos_end=seed->lidar.topRightCorner<3,1>();
             proposed.vel_end.setZero();proposed.bias_g.setZero();
             if(!tracking_limits_.check(accepted_state_,proposed,stamp-accepted_stamp_,false)) {
                 state_.rot_end=proposed.rot_end;state_.pos_end=proposed.pos_end;used_visual_seed_=true;
-            } else seed=nullptr;
+                seed_reason_="existing_map_initial_guess";
+            } else {seed=nullptr;seed_reason_="outside_old_lidar_motion_bound";}
         }
         if(candidate_active_ && !seed) {
             abort_candidate(stamp);propagated=state_;
         }
+        Eigen::Matrix4d previous=Eigen::Matrix4d::Identity(),expected;
+        previous.topLeftCorner<3,3>()=accepted_state_.rot_end;previous.topRightCorner<3,1>()=accepted_state_.pos_end;
+        const bool independent_prediction=!first && !candidate_active_ && independent_visual_enabled_ &&
+            independent_visual_.prediction(accepted_stamp_,stamp,previous,base_from_lidar_,expected);
+        independent_visual_pair_available_=independent_prediction;
+        visual_motion_check_=IndependentVisualMotion::Result{};
+        weak_directions_=0;weak_reference_missing_=false;
+        observable_projection_.setIdentity();
+        weak_motion_source_=degeneracy_projection_enabled_?"unavailable":"disabled";
+        StatesGroup motion_anchor=propagated;
+        const StatesGroup *motion_anchor_ptr=nullptr;
+        if(using_imu){motion_anchor_ptr=&motion_anchor;weak_motion_source_="calibrated_imu";}
+        else if(independent_prediction) {
+            motion_anchor.rot_end=expected.topLeftCorner<3,3>();motion_anchor.pos_end=expected.topRightCorner<3,1>();
+            motion_anchor_ptr=&motion_anchor;weak_motion_source_="independent_visual_increment";
+        } else if(seed && bridge) {
+            motion_anchor.rot_end=bridge->lidar.topLeftCorner<3,3>();motion_anchor.pos_end=bridge->lidar.topRightCorner<3,1>();
+            motion_anchor_ptr=&motion_anchor;weak_motion_source_="qualified_visual_recovery";
+        }
+        if(independent_prediction && !used_visual_seed_) {
+            StatesGroup proposed=state_;proposed.rot_end=expected.topLeftCorner<3,3>();proposed.pos_end=expected.topRightCorner<3,1>();
+            if(!tracking_limits_.check(accepted_state_,proposed,stamp-accepted_stamp_,using_imu)) {
+                state_.rot_end=proposed.rot_end;state_.pos_end=proposed.pos_end;
+                used_visual_seed_=true;seed_reason_="independent_visual_initial_guess";
+            }
+        }
         quality_.reset();
-        bool valid=first || update(used,body_cov,matching,solving,iterations,used_visual_seed_?&propagated:nullptr);
-        tracking_reason_=valid?"tracking":"registration_failed";
+        bool valid=first || update(used,body_cov,matching,solving,iterations,used_visual_seed_?&propagated:nullptr,motion_anchor_ptr);
+        tracking_reason_=valid?"tracking":
+            (weak_reference_missing_?"weak_geometry_needs_motion_reference":iterations>=max_iterations_ && !solver_converged_?
+                "registration_not_converged":"registration_failed");
+        if(valid && !first && !using_imu && degeneracy_projection_enabled_ && weak_directions_>0) {
+            // The discarded weak LiDAR correction must not survive as a CV
+            // velocity and seed the next scan. Keep actual IMU bias semantics.
+            const double dt=stamp-accepted_stamp_;
+            state_.vel_end=(state_.pos_end-accepted_state_.pos_end)/dt;
+            state_.bias_g=Log((accepted_state_.rot_end.transpose()*state_.rot_end).eval())/dt;
+        }
+        if(valid && independent_prediction && !quality_.reliable()) {
+            Eigen::Matrix4d candidate=Eigen::Matrix4d::Identity();
+            candidate.topLeftCorner<3,3>()=state_.rot_end;candidate.topRightCorner<3,1>()=state_.pos_end;
+            visual_motion_check_=independent_visual_.check(previous,candidate,expected);
+            if(!visual_motion_check_.consistent){valid=false;tracking_reason_=visual_motion_check_.reason;}
+        }
         if (valid && !first) {
             if (const char *reason=tracking_limits_.check(accepted_state_,state_,stamp-accepted_stamp_,using_imu)) {
                 valid=false; tracking_reason_=reason;
@@ -452,7 +623,12 @@ class VoxelMapNode : public rclcpp::Node {
                     tracking_reason_="submap_recovered";
                 } else tracking_reason_="submap_validating";
             }
-        } else if(!valid && seed && consecutive_failures_+1>=size_t(recovery_trigger_) && stamp>=next_recovery_stamp_) {
+        } else if(!valid && (seed || bridge) && !using_imu && recovery_enabled_ &&
+                  consecutive_failures_+1>=size_t(recovery_trigger_) && stamp>=next_recovery_stamp_) {
+            // A qualified formal trajectory can bridge beyond the held old
+            // LiDAR pose. Bootstrap is unavailable output until later scans
+            // verify broad geometry and same-time visual agreement.
+            if(!seed){seed=bridge;seed_reason_="accepted_visual_output_bridge";}
             // Preserve the old registration map until the candidate succeeds.
             backup_state_=accepted_state_;backup_stamp_=accepted_stamp_;
             backup_map_position_=last_map_position_;backup_map_rotation_=last_map_rotation_;
@@ -544,6 +720,7 @@ public:
                 throw std::runtime_error("Sensor extrinsics must be proper rigid transforms");
         }
         const Eigen::Matrix4d lidar_from_imu=base_from_lidar_.inverse()*base_from_imu;
+        tracking_limits_.body_origin_in_sensor=base_from_lidar_.inverse().topRightCorner<3,1>();
         imu_cfg.lidar_from_imu_rotation=lidar_from_imu.topLeftCorner<3,3>();
         imu_cfg.imu_origin_in_lidar=lidar_from_imu.topRightCorner<3,1>();
         imu_cfg.cv_velocity_noise=velocity_noise_;imu_cfg.cv_omega_noise=omega_noise_;
@@ -566,6 +743,14 @@ public:
         imu_frame_=declare_parameter<std::string>("imu_frame","imu");
         if(!std::isfinite(imu_time_offset_)||imu_frame_.empty())throw std::runtime_error("Invalid IMU stamp/frame configuration");
         imu_=std::make_unique<fusion_imu::OptionalImu>(imu_cfg);
+        const auto independent_visual_topic=declare_parameter<std::string>("independent_visual_topic","");
+        independent_visual_enabled_=!independent_visual_topic.empty();
+        independent_visual_wait_=declare_parameter<double>("independent_visual_wait_sec",.45);
+        degeneracy_projection_enabled_=declare_parameter<bool>("degeneracy_projection_enabled",false);
+        if(!std::isfinite(independent_visual_wait_) || independent_visual_wait_<0. || independent_visual_wait_>1.)
+            throw std::runtime_error("Independent visual wait must be between zero and one second");
+        if(independent_visual_enabled_)independent_visual_input_=create_subscription<nav_msgs::msg::Odometry>(
+            independent_visual_topic,rclcpp::QoS(3).reliable(),std::bind(&VoxelMapNode::independent_visual,this,std::placeholders::_1));
         recovery_enabled_=declare_parameter<bool>("visual_recovery_enabled",false);
         recovery_trigger_=declare_parameter<int>("submap_after_failures",4);
         recovery_confirm_=declare_parameter<int>("submap_confirmation_scans",3);
@@ -580,9 +765,12 @@ public:
             if(!std::isfinite(value) || value<=0.)throw std::runtime_error("Invalid visual recovery limits");
         if(recovery_enabled_) {
             visual_input_=create_subscription<nav_msgs::msg::Odometry>("/fusion/visual_continuous",rclcpp::QoS(3).reliable(),
-                std::bind(&VoxelMapNode::visual_seed,this,std::placeholders::_1));
-            pending_timer_=create_wall_timer(std::chrono::milliseconds(25),std::bind(&VoxelMapNode::drain_pending,this));
+                [this](nav_msgs::msg::Odometry::ConstSharedPtr m){visual_seed(m);});
+            recovery_input_=create_subscription<nav_msgs::msg::Odometry>("/fusion/recovery_reference",rclcpp::QoS(3).reliable(),
+                [this](nav_msgs::msg::Odometry::ConstSharedPtr m){visual_seed(m,true);});
         }
+        if(recovery_enabled_ || independent_visual_enabled_)
+            pending_timer_=create_wall_timer(std::chrono::milliseconds(25),std::bind(&VoxelMapNode::drain_pending,this));
         imu_status_=create_publisher<std_msgs::msg::String>("/fusion/imu_status",10);
         if(imu_cfg.enabled)imu_input_=create_subscription<sensor_msgs::msg::Imu>("/fusion/imu",
             rclcpp::SensorDataQoS().keep_last(capacity),std::bind(&VoxelMapNode::imu_sample,this,std::placeholders::_1));

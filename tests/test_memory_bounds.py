@@ -75,6 +75,34 @@ class MemoryBounds(unittest.TestCase):
             self.assertEqual(delivery.revision,grid.update_id)
             delivery.close();grid.close()
 
+    def test_display_thinning_preserves_geometry_reopen_and_removal(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'cloud.sqlite'
+            store=BoundedCloudStore(path,.1,preview_points=40,preview_voxel=.2,separate_preview=True)
+            points=np.array([[.05,.05,.05],[2.05,.05,.05],[4.05,.05,.05]])
+            mask=np.array([True,False,True])
+            store.append(points,preview_mask=mask)
+            self.assertEqual(store.count,3)
+            np.testing.assert_allclose(store.preview(),points[mask])
+            hidden=list(store.column_points([10,0],.2))
+            np.testing.assert_allclose(np.concatenate(hidden),points[1:2])
+            store.close()
+            # Eligibility survives reopen, including when inferred from disk.
+            store=BoundedCloudStore(path,.1,preview_points=40,preview_voxel=.2)
+            np.testing.assert_allclose(store.preview(),points[mask])
+            store.append(points[1:2])  # A later close observation fills display.
+            self.assertEqual(len(store.preview()),3)
+            rows=store.connection.execute('SELECT rowid,ix,iy,iz,x,y,z FROM voxels WHERE x>4').fetchall()
+            store.remove_rows(rows)
+            self.assertEqual(store.count,2)
+            self.assertEqual(len(store.preview()),2)
+            store.close()
+            store=BoundedCloudStore(path,.1,preview_points=40,preview_voxel=.2)
+            np.testing.assert_allclose(store.preview(),points[:2])
+            with self.assertRaises(ValueError):store.append(points,preview_mask=np.array([True]))
+            self.assertEqual(store.count,2)
+            store.close()
+
     def test_overview_expands_without_growing_arrays(self):
         overview=Overview(32,1.)
         initial=overview.minimum.nbytes+overview.maximum.nbytes+overview.count.nbytes

@@ -12,8 +12,9 @@ from test_stereo_geometry import profile,scene
 
 
 class Fixture:
-    def __init__(self):
-        self.cfg=profile();self.cfg['learned_visual'].update(max_tracking_gap_sec=3.,max_recovery_gap_sec=30.)
+    def __init__(self,recovery_gap=30.,recovery_keyframes=0):
+        self.cfg=profile();self.cfg['learned_visual'].update(max_tracking_gap_sec=3.,
+            max_recovery_gap_sec=recovery_gap,recovery_keyframes=recovery_keyframes)
         self.geometry=StereoGeometry(self.cfg);self.xyz=scene();self.features=[];self.index=0
         self.tracker=LearnedStereoTracker(self.cfg,self)
         self.blank=np.zeros((480,640),np.uint8)
@@ -22,7 +23,8 @@ class Fixture:
         f=self.features[self.index];self.index+=1;return f
 
     def match(self,first,second):
-        if first['frame']==getattr(self,'unmatchable_reference',None):return np.empty((0,2),int)
+        if (first['frame']==getattr(self,'unmatchable_reference',None) or
+                first['frame'] in getattr(self,'unmatchable_references',set())):return np.empty((0,2),int)
         if first['frame']!=second['frame'] and second['missing']:return np.empty((0,2),int)
         ids=np.arange(len(first['pixels']));return np.column_stack([ids,ids])
 
@@ -38,6 +40,72 @@ class Fixture:
 
 
 class ReferenceRecoveryTests(unittest.TestCase):
+    def test_long_dark_interval_preserves_geometry_but_not_unobserved_pose(self):
+        f=Fixture(recovery_gap=120.,recovery_keyframes=4)
+        f.frame(100.);f.frame(101.,.05)
+        saved=f.tracker.keyframe
+        for stamp in range(102,193):self.assertTrue(f.tracker.reject(float(stamp)))
+        self.assertIs(f.tracker.keyframe,saved)
+        self.assertEqual(f.tracker.last_pose[0],101.)
+        with self.assertRaisesRegex(TrackingFailure,'recovery_keyframe_confirming'):
+            f.frame(193.,.12)
+        self.assertEqual(f.tracker.last_pose[0],101.)
+        recovered=f.frame(194.,.12)
+        self.assertFalse(recovered.anchor);self.assertEqual(recovered.epoch,1)
+        np.testing.assert_allclose(recovered.base_pose[:3,3],[.12,0,0],atol=1e-5)
+        self.assertTrue(recovered.metrics['recovered_reference'])
+        self.assertFalse(f.tracker.reject(315.))
+        self.assertEqual(len(f.tracker.recovery_keyframes),0)
+
+    def test_archived_keyframe_requires_two_geometric_confirmations(self):
+        f=Fixture(recovery_gap=120.,recovery_keyframes=4)
+        f.frame(100.);f.frame(101.,.1);f.frame(102.,.2);f.frame(103.,.3)
+        f.unmatchable_references={102.,103.}
+        before=f.tracker.last_pose
+        with self.assertRaisesRegex(TrackingFailure,'recovery_keyframe_confirming'):
+            f.frame(105.,.15)
+        self.assertIs(f.tracker.last_pose,before)
+        recovered=f.frame(106.,.16)
+        self.assertTrue(recovered.metrics['recovered_archived_keyframe'])
+        self.assertEqual(recovered.metrics['recovery_confirmations'],2)
+        self.assertEqual(recovered.epoch,1)
+        np.testing.assert_allclose(recovered.base_pose[:3,3],[.16,0,0],atol=1e-5)
+        for i in range(10):f.frame(107.+i,2.3 if i%2==0 else .1)
+        self.assertLessEqual(len(f.tracker.recovery_keyframes),4)
+
+    def test_inconsistent_recovery_candidates_do_not_move_last_trusted_pose(self):
+        f=Fixture(recovery_gap=120.,recovery_keyframes=4)
+        f.frame(100.);f.frame(101.,.05)
+        saved=f.tracker.last_pose
+        for stamp,x in [(110.,.1),(111.,1.1),(112.,.1)]:
+            with self.assertRaisesRegex(TrackingFailure,'recovery_keyframe_confirming'):
+                f.frame(stamp,x)
+            self.assertIs(f.tracker.last_pose,saved)
+        with self.assertRaisesRegex(TrackingFailure,'stereo_motion_disagreement'):
+            f.frame(113.,.1,bad_depth=True)
+        self.assertIs(f.tracker.last_pose,saved)
+        # A failed geometric match clears the previous pending confirmation.
+        with self.assertRaisesRegex(TrackingFailure,'recovery_keyframe_confirming'):
+            f.frame(114.,.1)
+        result=f.frame(115.,.11)
+        self.assertEqual(result.metrics['recovery_confirmations'],2)
+        np.testing.assert_allclose(result.base_pose[:3,3],[.11,0,0],atol=1e-5)
+
+    def test_long_static_reference_stays_verified_and_slow_motion_is_preserved(self):
+        f=Fixture();f.frame(100.)
+        for stamp in range(101,171):
+            result=f.frame(float(stamp))
+            self.assertFalse(result.metrics['keyframe_replaced'])
+            self.assertEqual(result.epoch,1)
+        self.assertEqual(f.tracker.keyframe[0],100.)
+        self.assertTrue(f.tracker.reject(171.))
+        for i in range(1,9):
+            result=f.frame(171.+i,i*.005)
+            self.assertFalse(result.anchor)
+            np.testing.assert_allclose(result.base_pose[:3,3],[i*.005,0.,0.],atol=1e-5)
+        self.assertTrue(f.tracker.reject(180.))
+        self.assertFalse(f.tracker.reject(211.))
+
     def test_backup_reference_recovers_same_global_pose(self):
         f=Fixture();f.frame(100.);f.frame(101.,.05)
         f.unmatchable_reference=101.

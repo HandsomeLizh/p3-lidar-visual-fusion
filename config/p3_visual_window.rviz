@@ -32,10 +32,28 @@ Visualization Manager:
       Autocompute Value Bounds:
         Value: true
       Style: Points
-      Size (Pixels): 1
-      Size (m): 0.03
+      Size (Pixels): 2
+      Size (m): 0.12
       Alpha: 0.9
       Decay Time: 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: 车身候选回波（当前帧，仅显示）
+      Enabled: true
+      Topic:
+        Value: /T3/demo/vehicle_returns
+        Reliability Policy: Reliable
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Depth: 1
+      Position Transformer: XYZ
+      Color Transformer: FlatColor
+      Color: 220; 225; 235
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.02
+      Alpha: 1
+      Decay Time: 0
+      Queue Size: 2
     - Class: rviz_default_plugins/Path
       Name: 原始轨迹（真实高度）
       Enabled: false

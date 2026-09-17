@@ -24,6 +24,22 @@ class VisualContinuity:
             raise ValueError('Invalid visual continuity limits')
         self.raw=deque(maxlen=int(history_samples));self.reference=None
         self.distance=0.;self.reason='waiting_for_reference';self.epoch=None
+        self.origin=None;self.segment_start=None
+
+    def remember_origin(self,stamp,epoch,transform):
+        """Remember an explicit frontend gauge definition, never a motion sample.
+
+        The frontend publishes this only when it creates an identity epoch after
+        validating stereo geometry. Ordinary rejected/held poses do not qualify.
+        A later tracked frame and a co-timed qualified output are both required.
+        """
+        transform=rigid(transform)
+        if (not np.isfinite(stamp) or not epoch or epoch in ('map','odom') or
+                not np.allclose(transform,np.eye(4),rtol=0,atol=1e-8)):
+            raise ValueError('Invalid visual epoch origin')
+        if self.origin is not None and stamp<=self.origin[0]:return False
+        self.origin=(float(stamp),epoch,transform.copy())
+        return True
 
     def observe(self,stamp,epoch,transform,covariance):
         transform=rigid(transform);covariance=pose_covariance(covariance)
@@ -31,6 +47,7 @@ class VisualContinuity:
         if self.raw and stamp<=self.raw[-1][0]:raise ValueError('Nonmonotonic visual timestamp')
         if epoch!=self.epoch or (self.raw and stamp-self.raw[-1][0]>self.max_gap):
             self.raw.clear();self.reference=None;self.distance=0.
+            self.segment_start=float(stamp)
             self.reason='new_visual_segment_requires_reference'
         if self.raw:self.distance+=motion(self.raw[-1][1],transform)[1]
         self.epoch=epoch
@@ -40,10 +57,34 @@ class VisualContinuity:
         """May be called after delayed visual arrival; acquisition times match."""
         if not self.raw:return False
         sample=min(self.raw,key=lambda v:abs(v[0]-stamp))
-        if abs(sample[0]-stamp)>self.tolerance:return False
+        if abs(sample[0]-stamp)>self.tolerance:
+            origin=self.origin
+            first=self.raw[0]
+            if not (origin is not None and origin[1]==self.epoch and
+                    abs(origin[0]-stamp)<=self.tolerance and
+                    first[0]==self.segment_start and
+                    0.<first[0]-origin[0]<=self.max_gap):return False
+            # The identity origin defines coordinates; it is not a measured
+            # zero-motion pose. Reference and tracked-pose covariance remain in
+            # estimate(), including the entire observed displacement from origin.
+            sample=(origin[0],origin[2],np.zeros((6,6)),
+                    -motion(origin[2],first[1])[1])
         if self.reference and sample[0]<=self.reference[0][0]:return False
         transform=rigid(transform);covariance=pose_covariance(covariance)
+        previous=self.reference
+        before=self.estimate() if previous is not None else None
         self.reference=(sample,transform.copy(),covariance.copy())
+        if before is not None:
+            after=self.estimate()
+            # A recent but weak fused reference must not make an independently
+            # continuous visual fallback less certain than its existing frame.
+            # Compare both propagated candidates at the same current timestamp,
+            # including the existing distance/time drift allowance.
+            for block in [slice(0,3),slice(3,6)]:
+                old=float(np.linalg.eigvalsh(before[2][block,block])[-1])
+                new=float(np.linalg.eigvalsh(after[2][block,block])[-1])
+                if new>old+1e-9:
+                    self.reference=previous;self.reason='reference_uncertainty_worse';return False
         self.reason='anchored';return True
 
     def estimate(self):
@@ -79,4 +120,6 @@ class VisualContinuity:
 
     def status(self):
         return dict(reason=self.reason,epoch=self.epoch,anchored=self.reference is not None,
-                    history_samples=len(self.raw),path_length_m=self.distance)
+                    history_samples=len(self.raw),path_length_m=self.distance,
+                    epoch_origin_stamp_sec=(self.origin[0] if self.origin is not None
+                        and self.origin[1]==self.epoch else None))
