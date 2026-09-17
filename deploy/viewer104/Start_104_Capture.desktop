@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=01 启动104传感器采集
+Comment=通过 SSH 单独启动 104 双目、LiDAR、IMU 采集，不启动建图或控制
+Exec=/usr/bin/gnome-terminal -- /home/yanfa/P3/viewer104/start_104_capture.sh
+Icon=camera-photo
+Terminal=false
+Categories=Science;
+StartupNotify=false

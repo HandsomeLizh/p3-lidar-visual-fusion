@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=02 启动104建图并显示
+Comment=先单独开启采集，再通过 SSH 启动或复用 104 建图，在 237 显示地图
+Exec=/usr/bin/gnome-terminal -- /home/yanfa/P3/viewer104/start_104_and_view.sh
+Icon=video-display
+Terminal=false
+Categories=Science;
+StartupNotify=false
