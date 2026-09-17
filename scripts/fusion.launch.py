@@ -31,7 +31,14 @@ def nodes(context):
                "instantaneous_cloud":p["instantaneous_cloud"],
                "cloud_motion_compensated":p.get("cloud_motion_compensated",False),
                "base_from_imu":np.asarray(p["base_from_imu"]).reshape(-1).tolist(),
-               "imu_mode":ParameterValue(p["imu_mode"],value_type=str),"imu_calibration_confirmed":p["imu_calibration_confirmed"],
+                "imu_mode":ParameterValue(p["imu_mode"],value_type=str),"imu_calibration_confirmed":p["imu_calibration_confirmed"],
+                # Same-epoch raw poses are already gated by the learned
+                # frontend's keyframe recovery. Keep the recovery horizon in
+                # sync; the LiDAR bridge additionally bounds motion and drift.
+                "independent_visual_max_gap_sec":float(min(
+                    p.get("learned_visual",{}).get("max_recovery_gap_sec",6.),
+                    p.get("visual_continuity",{}).get("max_gap",6.)))
+                    if p.get("visual_source")=="learned" else 6.,
                "timing_path":str(out/"lidar_metrics.jsonl")},
                p.get("voxelmap",{})],output="screen"),
       Node(package="vins",executable="vins_node",name="vins_estimator",arguments=[str(out/"config/vins.yaml")],

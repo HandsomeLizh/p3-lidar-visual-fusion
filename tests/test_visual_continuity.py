@@ -78,6 +78,10 @@ class VisualContinuityTests(unittest.TestCase):
         self.assertFalse(track.anchor(2.,pose(10.1),np.eye(6)*3.9))
         after=track.estimate()
         np.testing.assert_allclose(after[1],before[1]);np.testing.assert_allclose(after[2],before[2])
+        quality=track.status()['estimate_quality']
+        self.assertEqual(quality['reference_stamp_sec'],1.)
+        self.assertAlmostEqual(quality['position_variance'],np.linalg.eigvalsh(before[2][:3,:3])[-1])
+        self.assertAlmostEqual(quality['rotation_variance'],np.linalg.eigvalsh(before[2][3:,3:])[-1])
         self.assertTrue(track.anchor(2.,pose(10.1),cov*.5))
 
 

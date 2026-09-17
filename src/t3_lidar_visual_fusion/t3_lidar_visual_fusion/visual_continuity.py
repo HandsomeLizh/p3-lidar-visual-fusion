@@ -25,6 +25,7 @@ class VisualContinuity:
         self.raw=deque(maxlen=int(history_samples));self.reference=None
         self.distance=0.;self.reason='waiting_for_reference';self.epoch=None
         self.origin=None;self.segment_start=None
+        self.estimate_quality=None
 
     def remember_origin(self,stamp,epoch,transform):
         """Remember an explicit frontend gauge definition, never a motion sample.
@@ -49,6 +50,7 @@ class VisualContinuity:
             self.raw.clear();self.reference=None;self.distance=0.
             self.segment_start=float(stamp)
             self.reason='new_visual_segment_requires_reference'
+            self.estimate_quality=None
         if self.raw:self.distance+=motion(self.raw[-1][1],transform)[1]
         self.epoch=epoch
         self.raw.append((float(stamp),transform.copy(),covariance.copy(),self.distance))
@@ -73,6 +75,7 @@ class VisualContinuity:
         transform=rigid(transform);covariance=pose_covariance(covariance)
         previous=self.reference
         before=self.estimate() if previous is not None else None
+        before_quality=self.estimate_quality
         self.reference=(sample,transform.copy(),covariance.copy())
         if before is not None:
             after=self.estimate()
@@ -84,7 +87,8 @@ class VisualContinuity:
                 old=float(np.linalg.eigvalsh(before[2][block,block])[-1])
                 new=float(np.linalg.eigvalsh(after[2][block,block])[-1])
                 if new>old+1e-9:
-                    self.reference=previous;self.reason='reference_uncertainty_worse';return False
+                    self.reference=previous;self.estimate_quality=before_quality
+                    self.reason='reference_uncertainty_worse';return False
         self.reason='anchored';return True
 
     def estimate(self):
@@ -115,11 +119,16 @@ class VisualContinuity:
         covariance[:3,:3]+=np.eye(3)*((self.distance_noise*distance)**2+self.position_walk*elapsed)
         covariance[3:,3:]+=np.eye(3)*((self.angle_noise*distance)**2+self.rotation_walk*elapsed)
         covariance=pose_covariance(.5*(covariance+covariance.T))
+        self.estimate_quality=dict(stamp_sec=current[0],reference_stamp_sec=anchor[0],
+            elapsed_from_reference_sec=elapsed,path_from_reference_m=distance,
+            position_variance=float(np.linalg.eigvalsh(covariance[:3,:3])[-1]),
+            rotation_variance=float(np.linalg.eigvalsh(covariance[3:,3:])[-1]))
         self.reason='continuous_visual_pose'
         return current[0],result,covariance
 
     def status(self):
         return dict(reason=self.reason,epoch=self.epoch,anchored=self.reference is not None,
+                    estimate_quality=self.estimate_quality,
                     history_samples=len(self.raw),path_length_m=self.distance,
                     epoch_origin_stamp_sec=(self.origin[0] if self.origin is not None
                         and self.origin[1]==self.epoch else None))

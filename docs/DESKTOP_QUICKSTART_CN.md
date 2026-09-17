@@ -12,13 +12,14 @@
 
 ```bash
 cd /home/yanfa/P3/lidar_visual_fusion
-./start_simulation_sources.sh
+./start_simulation_sources.sh --host 192.168.10.23
 ```
 
 - 启动 capture、车辆控制桥接和人工控制窗口，复用配置一致的已有节点。
 - 脚本不会自动开车；由人在控制窗口操作。
 - 保持终端打开。若三项已经运行，脚本检查后退出是正常的。
-- UE 地址为 `192.168.10.22`；采集端口 6665，控制与反馈端口 6668。
+- 本次 UE 地址为 `192.168.10.23`；采集端口 6665，控制与反馈端口 6668。地址变化时修改 `--host`；不要省略它而误用旧的默认地址。
+- capture 使用本融合项目的 `install/capture_transport/lib/sensor_capture_ros2/sensor_capture_node`，默认开启有界并行发布；不调用原项目旧 capture。2026-09-17 21:14 已切换新版。
 
 ## 2. 启动建图和显示
 
@@ -88,7 +89,7 @@ cd /home/yanfa/P3/lidar_visual_fusion
 ```bash
 cd /home/yanfa/P3/lidar_visual_fusion
 ./status.sh
-./start_simulation_sources.sh --check
+./start_simulation_sources.sh --host 192.168.10.23 --check
 ```
 
 需要查看定位健康状态：
@@ -113,5 +114,9 @@ ros2 topic echo --once /fusion/status
 短暂黑暗或跟踪失败后，有共同可见内容且几何检查通过时，经过连续两次确认再接回原坐标段。恢复期间不会把旧位置伪装成新的有效定位。没有共同视野、恢复检查不过或超过保留时间，仍可能恢复失败。
 
 **目前关键帧只在内存中；保存地图不等于保存可重定位的关键帧库。** 重启后加载关键帧、跨会话重定位、完整回环纠正历史轨迹与高程图，属于下一步功能。方案见桌面另一份《P3关键帧保存与回环_后续方案.md》。
+
+2026-09-17 晚间已安装恢复修复：LiDAR 保留最后可信帧对应的独立视觉参考，不再因距上次成功 LiDAR 超过旧的 6 秒而永久拒绝恢复。必须仍处于同一视觉坐标段，且运动与累计不确定性检查通过；失效帧不写入正式配准地图，输出跳变保护保留。普通历史队列保持有界。上述配置会自动启用，不需要新的参数。
+
+新版通过 8 组隔离 ROS 时序与恢复测试，尚未完成本版实际行驶精度验收。算法需要重新启动 P3 才会加载；capture 已生效，不必反复重启。IMU 本轮暂停处理、不接入融合，实车接口保留。
 
 完整文档：[GitHub 文档索引](https://github.com/HandsomeLizh/p3-lidar-visual-fusion/blob/main/docs/INDEX_CN.md)；改动和问题复盘：[项目演进记录](https://github.com/HandsomeLizh/p3-lidar-visual-fusion/blob/main/docs/PROJECT_EVOLUTION_CN.md)。

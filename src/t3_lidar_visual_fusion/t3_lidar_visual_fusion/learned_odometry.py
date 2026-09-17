@@ -75,6 +75,8 @@ class LearnedOdometry(Node):
             started=0,tracked=0,anchors=0,rejected=0,invalid_input=0,sync_dropped=0)
         self.last={"reason":"initializing"}
         self.samples=deque(maxlen=256)
+        self.ingress_events=deque(maxlen=64)
+        self.processing_timing={}
         self.fatal=None
         self.failure_streak=0
         self.next_probe=0.
@@ -99,7 +101,7 @@ class LearnedOdometry(Node):
             if self.profile.get("stereo_mapping_topic") else None)
         self.status_pub=self.create_publisher(String,"/fusion/learned_status",3)
         self.create_subscription(String,"/fusion/status",self.fusion_feedback,3)
-        qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE)
+        qos=QoSProfile(depth=2,reliability=ReliabilityPolicy.RELIABLE)
         for side,topic in enumerate(["/fusion/left","/fusion/right"]):
             self.create_subscription(Image,topic,lambda msg,side=side:self.image(msg,side),qos)
         self.output.mkdir(parents=True,exist_ok=True)
@@ -125,15 +127,20 @@ class LearnedOdometry(Node):
         with self.lock:self.counts[name]+=amount
 
     def image(self,msg,side):
+        received=time.monotonic()
+        received_ros=self.get_clock().now().nanoseconds/1e9
+        with self.lock:
+            self.ingress_events.append(dict(side=side,sensor_stamp_sec=stamp_sec(msg),
+                callback_ros_sec=received_ros))
         self.increment("left_received" if side==0 else "right_received")
         if ((msg.width,msg.height)!=tuple(self.profile["output_image_size"])
             or msg.encoding not in (("bgr8",) if self.encoding=='bgr8' else ("mono8","8UC1"))
             or len(msg.data)>self.cfg.get("max_normalized_image_bytes",1048576)):
             self.increment("invalid_input");return
         if len(self.frames[side])==self.frames[side].maxlen:self.increment("sync_dropped")
-        self.frames[side].append((msg,time.monotonic()))
+        self.frames[side].append((msg,received,received_ros))
         while self.frames[0] and self.frames[1]:
-            (left,wall0),(right,wall1)=self.frames[0][0],self.frames[1][0]
+            (left,wall0,ros0),(right,wall1,ros1)=self.frames[0][0],self.frames[1][0]
             a,b=stamp_sec(left),stamp_sec(right)
             if abs(a-b)>self.profile.get("stereo_max_skew",.01):
                 self.frames[0 if a<b else 1].popleft();self.increment("sync_dropped");continue
@@ -141,7 +148,9 @@ class LearnedOdometry(Node):
             if a<=self.last_pair_stamp:self.increment("sync_dropped");continue
             self.last_pair_stamp=a
             self.increment("synchronized")
-            if self.queue.put((left,right,min(wall0,wall1))):self.increment("replaced_pending")
+            timing=dict(left_callback_ros_sec=ros0,right_callback_ros_sec=ros1,
+                pair_ready_ros_sec=self.get_clock().now().nanoseconds/1e9)
+            if self.queue.put((left,right,min(wall0,wall1),timing)):self.increment("replaced_pending")
 
     def age(self,msg,queued):
         return self.timing.check(stamp_sec(msg),self.get_clock().now().nanoseconds/1e9,
@@ -151,6 +160,9 @@ class LearnedOdometry(Node):
         record=dict(metrics,backend=self.cfg["backend"])
         resources=self.backend.resource_snapshot()
         with self.lock:
+            record['message_timing']=dict(self.processing_timing)
+            record['ingress_events']=list(self.ingress_events)
+            self.ingress_events.clear()
             self.last=record
             self.samples.append({k:v for k,v in record.items() if k.endswith("_sec") and isinstance(v,(int,float))})
             self.resources=resources
@@ -199,7 +211,10 @@ class LearnedOdometry(Node):
             while True:
                 pair=self.queue.take(max(earliest,self.next_probe))
                 if pair is None:return
-                left,right,queued=pair
+                left,right,queued,timing=pair
+                self.processing_timing=dict(timing,
+                    processing_start_ros_sec=self.get_clock().now().nanoseconds/1e9,
+                    callback_to_worker_wait_sec=max(0.,time.monotonic()-queued))
                 earliest=time.monotonic()+self.period
                 self.increment("started")
                 begin=time.perf_counter()
@@ -233,7 +248,9 @@ class LearnedOdometry(Node):
                 # Explicit gauge event: an ordinary rejected/held identity pose
                 # must never be mistaken for a newly validated stereo origin.
                 if result.anchor:self.origin_pub.publish(msg)
+                self.processing_timing['output_publish_start_ros_sec']=self.get_clock().now().nanoseconds/1e9
                 self.pub.publish(msg)
+                self.processing_timing['output_publish_end_ros_sec']=self.get_clock().now().nanoseconds/1e9
                 result.metrics['mapping_stereo_points']=self.publish_stereo(left,queued)
                 self.increment("anchors" if result.anchor else "tracked")
                 if result.anchor and result.metrics["reason"] not in ("initialized","tracking_gap"):
@@ -253,7 +270,8 @@ class LearnedOdometry(Node):
 
     def status(self):
         with self.lock:
-            data=dict(self.counts,last=dict(self.last),resources=dict(self.resources))
+            data=dict(self.counts,last=dict(self.last),resources=dict(self.resources),
+                pending_ingress_events=list(self.ingress_events))
             samples=list(self.samples);fatal=self.fatal
         if fatal:raise RuntimeError(fatal)
         fields=sorted({key for sample in samples for key in sample})
@@ -264,6 +282,7 @@ class LearnedOdometry(Node):
         data["probing_at_reduced_rate"]=self.next_probe>time.monotonic()
         data["pending_pair_capacity"]=1
         data["stereo_sync_capacity_per_camera"]=2
+        data["image_subscription_depth_per_camera"]=2
         payload=json.dumps(data,allow_nan=False)
         self.status_pub.publish(String(data=payload))
         temp=self.output/"learned_metrics.tmp"

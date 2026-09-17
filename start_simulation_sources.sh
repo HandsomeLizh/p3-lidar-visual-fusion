@@ -29,7 +29,7 @@ def snapshot():
         try:
             argv = (directory/'cmdline').read_bytes().decode(errors='replace').strip('\0').split('\0')
             name = Path(argv[0]).name
-            if name not in SERVICES and len(argv) > 1 and Path(argv[1]).name == 'lunar_car_gui':
+            if name not in SERVICES and len(argv) > 1 and Path(argv[1]).name in ('lunar_car_gui', 'lunar_car_gui_node.py'):
                 name = 'lunar_car_gui'
             if name not in SERVICES:
                 continue
@@ -157,7 +157,11 @@ def main(root, check_only=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='start_simulation_sources.sh', description='启动或复用 UE capture、车辆控制和人工控制窗口。')
     parser.add_argument('--check', action='store_true', help='只检查已有节点，不启动或停止进程')
+    parser.add_argument('--host', default=os.environ.get('P3_UE_HOST', HOST), help='当前 UE 的 TCP 地址')
     args = parser.parse_args(sys.argv[2:])
+    HOST = args.host
+    SERVICES['sensor_capture_node'] = ('capture', 'start_capture_source.sh', ['--host', HOST], '6665')
+    SERVICES['lunar_car_node'] = ('车辆控制', 'start_car.sh', [HOST, '6668', 'false'], '6668')
     def interrupted(*_):
         raise KeyboardInterrupt
     signal.signal(signal.SIGINT, interrupted)

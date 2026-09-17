@@ -185,6 +185,10 @@ class VoxelMapNode : public rclcpp::Node {
             sample.valid=eigen.info()==Eigen::Success && eigen.eigenvalues().minCoeff()>=0. &&
                 cov.topLeftCorner<3,3>().diagonal().maxCoeff()<=.04 &&
                 cov.bottomRightCorner<3,3>().diagonal().maxCoeff()<=.02 && cov.trace()>0.;
+            if(sample.valid) {
+                sample.position_variance=Eigen::SelfAdjointEigenSolver<M3D>(cov.topLeftCorner<3,3>()).eigenvalues().maxCoeff();
+                sample.rotation_variance=Eigen::SelfAdjointEigenSolver<M3D>(cov.bottomRightCorner<3,3>()).eigenvalues().maxCoeff();
+            }
             sample.epoch_origin=sample.epoch.rfind("learned_epoch_",0)==0 &&
                 eigen.info()==Eigen::Success && eigen.eigenvalues().minCoeff()>=1e5 &&
                 sample.body.isApprox(Eigen::Matrix4d::Identity(),1e-8);
@@ -483,6 +487,13 @@ class VoxelMapNode : public rclcpp::Node {
              << ",\"pending_peak\":" << pending_peak_
              << ",\"reference_wait_sec\":" << reference_wait_sec_
              << ",\"independent_visual_pair_available\":" << (independent_visual_pair_available_?"true":"false")
+             << ",\"independent_reference_reason\":\"" << independent_visual_.prediction_quality().reason << "\""
+             << ",\"independent_anchor_retained\":" << (independent_visual_.prediction_quality().retained_anchor?"true":"false")
+             << ",\"independent_anchor_stamp_sec\":" << independent_visual_.prediction_quality().anchor_stamp
+             << ",\"independent_bridge_elapsed_sec\":" << independent_visual_.prediction_quality().elapsed
+             << ",\"independent_bridge_path_m\":" << independent_visual_.prediction_quality().path_length
+             << ",\"independent_bridge_position_variance\":" << independent_visual_.prediction_quality().position_variance
+             << ",\"independent_bridge_rotation_variance\":" << independent_visual_.prediction_quality().rotation_variance
              << ",\"match_ratio\":" << quality_.match_ratio() << ",\"residual_rms_m\":" << quality_.residual_rms()
              << ",\"estimated_speed_mps\":" << state_.vel_end.norm()
              << ",\"position\":[" << state_.pos_end.x() << "," << state_.pos_end.y() << "," << state_.pos_end.z() << "]"
@@ -646,6 +657,7 @@ class VoxelMapNode : public rclcpp::Node {
             if(!using_imu)hold_unobserved_cv(state_,accepted_state_);
             else state_=propagated; // Preserve calibrated real-IMU propagation/biases.
         }
+        if(publish_valid)independent_visual_.retain_anchor(stamp);
         if(publish_valid)consecutive_failures_=0;
         else {++failures_;++consecutive_failures_;}
         auto map_start=Clock::now();
@@ -745,6 +757,14 @@ public:
         imu_=std::make_unique<fusion_imu::OptionalImu>(imu_cfg);
         const auto independent_visual_topic=declare_parameter<std::string>("independent_visual_topic","");
         independent_visual_enabled_=!independent_visual_topic.empty();
+        independent_visual_.max_gap=declare_parameter<double>("independent_visual_max_gap_sec",6.);
+        independent_visual_.max_position_variance=declare_parameter<double>("independent_visual_max_position_variance",.5);
+        independent_visual_.max_rotation_variance=declare_parameter<double>("independent_visual_max_rotation_variance",.1);
+        independent_visual_.max_speed=tracking_limits_.max_speed;
+        independent_visual_.max_angular_speed=tracking_limits_.max_angular_speed;
+        independent_visual_.max_step=tracking_limits_.max_step;
+        independent_visual_.max_angle=tracking_limits_.max_angle;
+        independent_visual_.validate();
         independent_visual_wait_=declare_parameter<double>("independent_visual_wait_sec",.45);
         degeneracy_projection_enabled_=declare_parameter<bool>("degeneracy_projection_enabled",false);
         if(!std::isfinite(independent_visual_wait_) || independent_visual_wait_<0. || independent_visual_wait_>1.)

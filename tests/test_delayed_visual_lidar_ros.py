@@ -23,6 +23,7 @@ def main():
     ap.add_argument('--out', type=Path, required=True)
     ap.add_argument('--wait', type=float, required=True)
     ap.add_argument('--expect-fixed', action='store_true')
+    ap.add_argument('--recovery-cases', action='store_true')
     args = ap.parse_args()
     assert os.environ.get('ROS_DOMAIN_ID') == '88'
     assert os.environ.get('ROS_LOCALHOST_ONLY') == '1'
@@ -91,6 +92,7 @@ def main():
             '-p', 'max_iterations:=30', '-p', 'tracking_max_speed:=0.3',
             '-p', 'degeneracy_projection_enabled:=true',
             '-p', 'independent_visual_topic:=/fusion/learned_raw',
+            '-p', 'independent_visual_max_gap_sec:=120.0',
             '-p', 'independent_visual_wait_sec:=' + str(args.wait), '-p', 'threads:=1'],
             stdout=handle, stderr=subprocess.STDOUT, start_new_session=True)
         spin(10., lambda: clouds.get_subscription_count() == 1 and
@@ -127,6 +129,12 @@ def main():
                 for i in (1, 2) if i in frames) and all(i in frames for i in (1, 2))
         else:
             result['all_expected_accepted'] = all(i in frames and frames[i]['valid_update'] for i in expected)
+        if name == 'recovered_after_six_seconds':
+            result['failed_frame_kept_map'] = (1 in frames and not frames[1]['valid_update'] and
+                frames[1]['map_keyframes'] == frames[0]['map_keyframes'] and
+                np.allclose(frames[1]['position'], frames[0]['position']))
+        if name == 'retained_beyond_history':
+            result['used_retained_anchor'] = frames.get(90, {}).get('independent_anchor_retained', False)
         stop()
         print(name, json.dumps(result), flush=True)
         return result
@@ -151,6 +159,12 @@ def main():
         events = [(.05, 'cloud', 1), (.25, 'cloud', 2), (.30, 'invalid', 2),
                   (1.5, 'cloud', 3), (1.55, 'visual', 3)]
         results['missing_and_invalid'] = case('missing_and_invalid', events, [0, 3])
+        if args.recovery_cases:
+            results['recovered_after_six_seconds'] = case('recovered_after_six_seconds',
+                [(.05, 'cloud', 1), (1.25, 'visual', 18), (1.30, 'cloud', 18)], [0, 18])
+            events = [(.05+i*.02, 'visual', i) for i in range(1, 91)]
+            events.append((2.10, 'cloud', 90))
+            results['retained_beyond_history'] = case('retained_beyond_history', events, [0, 90])
         report = dict(binary=str(args.binary), wait_limit_sec=args.wait, cases=results,
                       scope='Synthetic flat terrain and asynchronous visual delivery in localhost ROS domain 88')
         (args.out / 'report.json').write_text(json.dumps(report, indent=2))
@@ -165,6 +179,13 @@ def main():
             # Raising an upper wait bound does not impose that delay on ready data.
             assert max(results['ready']['wait_sec']) < .3, results['ready']
             assert max(results['late']['wait_sec']) < 1.2, results['late']
+            if args.recovery_cases:
+                for name in ('recovered_after_six_seconds', 'retained_beyond_history'):
+                    assert results[name]['all_expected_accepted'], results[name]
+                    assert results[name]['maximum_position_error_m'] < .005, results[name]
+                    assert results[name]['queue_peak'] <= 2, results[name]
+                assert results['recovered_after_six_seconds']['failed_frame_kept_map']
+                assert results['retained_beyond_history']['used_retained_anchor']
         print('PASS' if args.expect_fixed else 'BASELINE_RECORDED', flush=True)
     finally:
         if process is not None:

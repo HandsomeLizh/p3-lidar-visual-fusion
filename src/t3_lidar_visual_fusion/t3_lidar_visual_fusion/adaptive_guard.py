@@ -53,6 +53,7 @@ class AdaptiveGuard(OdometryGuard):
             raise ValueError('visual_motion_information_scale must be in [1,2]')
         self.ekf_candidate=None
         self.visual_candidate=None;self.prefer_visual_output=False;self.output_source='waiting'
+        self.visual_candidate_quality={'reason':'waiting_for_visual_candidate'}
         self.ekf_references=deque(maxlen=128)
         self.visual_pose_pub=self.create_publisher(Odometry,'/fusion/visual_continuous',3)
         self.recovery_pose_pub=self.create_publisher(Odometry,'/fusion/recovery_reference',3)
@@ -377,6 +378,7 @@ class AdaptiveGuard(OdometryGuard):
                 # Publication still waits for the visual recovery gate below.
                 self.visual_continuity.observe(stamp,msg.header.frame_id,transform,weighted_covariance)
                 self.visual_candidate=None
+                self.visual_candidate_quality={'reason':'waiting_for_qualified_visual_candidate','stamp_sec':stamp}
                 # Only poses which passed the formal output gate may establish
                 # or refresh the visual frame. A rejected EKF/LiDAR pose must
                 # never drag otherwise continuous vision across the same jump.
@@ -427,7 +429,13 @@ class AdaptiveGuard(OdometryGuard):
                     set_pose(candidate.pose.pose,pose);candidate.pose.covariance=pose_cov.ravel().tolist()
                     candidate.twist.covariance=np.diag(np.full(6,1e6)).ravel().tolist()
                     self.visual_candidate=candidate
-                    if self.visual_covariance_qualified(pose_cov):self.visual_pose_pub.publish(candidate)
+                    qualified=self.visual_covariance_qualified(pose_cov)
+                    self.visual_candidate_quality=dict(reason='qualified' if qualified else 'visual_covariance_exceeded',
+                        stamp_sec=stamp,position_variance=float(np.linalg.eigvalsh(pose_cov[:3,:3])[-1]),
+                        rotation_variance=float(np.linalg.eigvalsh(pose_cov[3:,3:])[-1]),
+                        position_limit=self.cfg.get('qualified_position_variance',4.),
+                        rotation_limit=self.cfg.get('qualified_rotation_variance',.5))
+                    if qualified:self.visual_pose_pub.publish(candidate)
                     if self.select_visual_output():self.filtered(candidate,source='visual')
         except ValueError:
             self.close_vision("invalid_visual_body_pose")
@@ -590,6 +598,7 @@ class AdaptiveGuard(OdometryGuard):
             fusion_strategy="persistent_epoch_full_covariance", operating_mode=mode,
             localization_valid=bool((lidar or visual) and self.output_qualified),
             output_source=self.output_source,visual_continuity=self.visual_continuity.status(),
+            visual_candidate_quality=self.visual_candidate_quality,
             pose_source_preference=self.pose_source_preference,
             visual_motion_information_scale=self.visual_motion_information_scale,
             submap_id=self.submap_id,lidar_applied_submap=self.lidar_applied_submap,bridge_position_variance=float(self.bridge_variance[0]),
