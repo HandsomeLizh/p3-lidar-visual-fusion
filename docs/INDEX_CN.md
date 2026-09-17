@@ -48,3 +48,5 @@
 其余带日期或算法名称的报告保留原路径，便于追溯。当前运行参数以启动时所选配置及本次结果中的 `profile.yaml` 为准；本轮运行使用 `config/simulation_lidar_camera_fov.yaml`。已启动进程不会自动加载之后修改的配置。
 
 - [Parallel capture and live input / 2026-09-17](TRANSPORT_PARALLEL_CN.md)
+
+- [仿真速度与角速度：坐标和可用性](SIMULATION_MOTION_STATUS_CN.md)
