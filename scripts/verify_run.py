@@ -20,6 +20,7 @@ def main():
     a=argparse.ArgumentParser();a.add_argument("--seconds",type=float,default=90)
     a.add_argument("--report",required=True)
     a.add_argument("--visual-source",choices=["vins","learned","none","roma_external"],default="vins")
+    a.add_argument("--cloud-topic",default="/T3/mapping/lidar_map")
     a.add_argument("--ready-file",default="");a.add_argument("--stop-file",default="")
     x=a.parse_args()
     rclpy.init();n=Node("fusion_interface_verifier")
@@ -65,7 +66,8 @@ def main():
     n.create_subscription(RosPath,"/T3/semantic/trajectory",path,qos)
     def cloud(m):
         counts["cloud"]+=1;details["cloud_points"]=m.width*m.height;frames.add(m.header.frame_id)
-    n.create_subscription(PointCloud2,"/T3/mapping/lidar_map",cloud,qos)
+    details["cloud_topic"]=x.cloud_topic
+    n.create_subscription(PointCloud2,x.cloud_topic,cloud,qos)
     def grid(m):
         counts["grid"]+=1;details["layers"]=list(m.layers);frames.add(m.header.frame_id)
         i=m.layers.index("elevation")

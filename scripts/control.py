@@ -163,6 +163,7 @@ def main():
         spawn(s,"verifier",["/usr/bin/python3",str(ROOT/"scripts/verify_run.py"),
             "--seconds",str(x.verify_seconds),"--report",str(out/"verification.json"),
             "--visual-source",profile.get("visual_source","none"),
+            "--cloud-topic","/T3/mapping/stereo_map" if profile.get("mapping_source")=="stereo" else "/T3/mapping/lidar_map",
             "--ready-file",str(ready),"--stop-file",str(out/"verifier.stop")],env)
         deadline=time.monotonic()+20
         while time.monotonic()<deadline and not ready.exists():
@@ -206,7 +207,8 @@ def main():
         spawn(s,"player",args,env)
     print("STARTED; awaiting sensor/estimator validation:",out,flush=True)
     print("Outputs: /T3/semantic/current_pose, /T3/semantic/trajectory, /T3/semantic/incremental_map",flush=True)
-    print("Maps: /T3/mapping/elevation_map, /T3/mapping/lidar_map",flush=True)
+    cloud_topic="/T3/mapping/stereo_map" if profile.get("mapping_source")=="stereo" else "/T3/mapping/lidar_map"
+    print("Maps: /T3/mapping/elevation_map, "+cloud_topic,flush=True)
 
 
 if __name__=="__main__":main()
