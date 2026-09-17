@@ -394,15 +394,14 @@ class Monitor(Node):
         trace.pose.orientation.w = 1.
         trace.scale.x = .30
         trace.color.r, trace.color.g, trace.color.b, trace.color.a = 1., .65, .05, 1.
-        trace.points = [Point(x=p.pose.position.x, y=p.pose.position.y, z=p.pose.position.z + 2.)
+        trace.points = [Point(x=p.pose.position.x, y=p.pose.position.y, z=p.pose.position.z)
                         for p in message.poses[-5000:]]
         arrow = Marker()
         arrow.header = message.header
         arrow.ns, arrow.id, arrow.type = 'rover', 1, Marker.ARROW
         import copy
         arrow.pose = copy.deepcopy(message.poses[-1].pose)
-        arrow.pose.position.z += 2.
-        arrow.scale.x, arrow.scale.y, arrow.scale.z = 3., .7, .7
+        arrow.scale.x, arrow.scale.y, arrow.scale.z = 1., .25, .25
         arrow.color.r, arrow.color.g, arrow.color.b, arrow.color.a = .15, 1., 1., 1.
         self.marker_pub.publish(MarkerArray(markers=[trace, arrow]))
 
