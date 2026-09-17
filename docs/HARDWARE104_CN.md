@@ -53,7 +53,7 @@ cd /home/yanfa/P3/lidar_visual_fusion
 | 建图及过滤状态 | `/fusion/map_status` | `std_msgs/msg/String` |
 | 惯性／时间／融合状态 | `/fusion/imu_status`、`/fusion/hardware_status`、`/fusion/status` | `std_msgs/msg/String` |
 
-局部地图配置周期 1 秒，全局 2 秒，有新内容才发布；实际周期受计算量影响。规划局部地图和右侧近车窗口均为 32×32 米，左侧保留全局点云。GridMap 包含 `elevation`、`elevation_variance`、`height_range`、`roughness`、`observation_count`，未知高度仍为 NaN。当前实机配置不发布占用/障碍分类、语义增量及分类概览；P4 使用高程自行判断通行代价。原窗口仍支持在已知高程格上选目标，并显示 P4 路径；本次部署不启动 P4 或自动行驶。
+局部地图配置周期 1 秒，全局 2 秒，有新内容才发布；实际周期受计算量影响。**规划局部地图是跟随车辆的 64×64 米、0.2 米分辨率，即 320×320 格；右侧显示独立跟车查看 32×32 米**，左侧保留全局点云。这个范围修正需使用新版配置启动；已经运行的旧进程不会热加载 YAML。GridMap 包含 `elevation`、`elevation_variance`、`height_range`、`roughness`、`observation_count`，未知高度仍为 NaN。当前实机配置不发布占用/障碍分类、语义增量及分类概览；P4 使用高程自行判断通行代价。原窗口仍支持在已知高程格上选目标，并显示 P4 路径；本次部署不启动 P4 或自动行驶。
 
 原始输入连通性检查：
 

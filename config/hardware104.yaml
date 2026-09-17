@@ -183,7 +183,8 @@ ground_clearance:
   reference_max_distance_m: 3.0
 cloud_voxel_size: 0.12
 cloud_preview_points: 150000
-map_window: 32.0
+# Planner output is 64 x 64 m (320 x 320 cells). The viewer follows a separate 32 m window.
+map_window: 64.0
 map_publish_period: 1.0
 max_elevation_points: 12000
 pose_tolerance: 0.12

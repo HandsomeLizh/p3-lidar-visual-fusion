@@ -40,7 +40,7 @@ def main():
         source_wall_timeout=1.5,visual_reference_wait=.3,stereo_max_skew=.01,
         pose_max_gap=.6,pose_tolerance=.12,mapping_pose_settle_sec=.4,
         mapping_wait_timeout=3.,ekf_sensor_timeout=.5,
-        map_publish_period=1.,global_publish_period=2.,
+        map_window=64.,map_publish_period=1.,global_publish_period=2.,
         min_range=.7,max_range=50.,max_scan_duration=.12,
         tof_sources=[],telemetry_motion={'enabled':False},
         self_filter={'enabled':True,'min_xyz_m':[-1.47,-1.,.13],'max_xyz_m':[.53,1.,1.03]},

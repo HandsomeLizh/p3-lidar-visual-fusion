@@ -64,6 +64,9 @@ def main():
             assert not received['lidar_cloud']
             assert cloud_arrays(received['cloud'][-1])[:,2].max()>2.7
             local=received['local'][-1];height=np.array(local.data[local.layers.index('elevation')].data)
+            assert local.info.length_x==local.info.length_y==64.
+            assert [d.size for d in local.data[0].layout.dim]==[320,320]
+            np.testing.assert_allclose([local.info.pose.position.x,local.info.pose.position.y],first[:2,3],atol=.2)
             assert np.isfinite(height).sum()>50 and np.nanmax(height)<.2
             # A deliberately conflicting range surface cannot add or overwrite
             # either geometry output, even if a caller bypasses subscriptions.
@@ -80,6 +83,8 @@ def main():
             assert mapper.cloud.count==count and mapper.grid.update_id==revision
             assert mapper.stats['stereo_rejected']==2
             mapper.publish();mapper.publish_global();mapper.save();drain()
+            np.testing.assert_allclose([received['local'][-1].info.pose.position.x,
+                                       received['local'][-1].info.pose.position.y],second[:2,3],atol=.2)
             assert not received['lidar_cloud']
             metadata=json.loads((out/'map/map_metadata.json').read_text())
             assert metadata['mapping_source']=='stereo' and metadata['cloud_topic']=='/T3/mapping/stereo_map'
@@ -88,6 +93,7 @@ def main():
                 cloud_accumulates_with_fused_pose=True,grid_from_confirmed_stereo_only=True,
                 overhead_only_in_3d=True,body_filtered=True,poor_quality_pauses_map=True,
                 first_cloud_points=first_count,final_cloud_points=count,stats=mapper.stats,
+                planner_window_m=64.,planner_cells_per_side=320,planner_window_follows_vehicle=True,
                 vehicle_commands_published=0)
         finally:
             mapper.dense_writer.close();mapper.grid.close();mapper.delivery.close();mapper.cloud.close();mapper.tum.close()
