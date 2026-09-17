@@ -14,7 +14,7 @@ def main():
  assert os.environ['ROS_DOMAIN_ID']=='95' and os.environ['ROS_LOCALHOST_ONLY']=='1'
  with tempfile.TemporaryDirectory(dir=ROOT/'build') as directory:
   out=Path(directory);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
-  cfg.update(elevation_fusion={'enabled':False},map_publish_period=1000.,global_publish_period=1000.,tile_cells=16)
+  cfg.update(elevation_fusion={'enabled':False},map_publish_period=1000.,global_publish_period=1000.,tile_cells=16,map_window=32.)
   profile=out/'profile.yaml';profile.write_text(yaml.safe_dump(cfg))
   rclpy.init(args=['--ros-args','-p','profile_path:='+str(profile),'-p','output_dir:='+str(out/'map')])
   mapper=TerrainMapper();monitor=visual_monitor.Monitor();executor=SingleThreadedExecutor()
