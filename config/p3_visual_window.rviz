@@ -32,7 +32,7 @@ Visualization Manager:
       Autocompute Value Bounds:
         Value: true
       Style: Points
-      Size (Pixels): 1
+      Size (Pixels): 1.5
       Size (m): 0.03
       Alpha: 0.9
       Decay Time: 0
