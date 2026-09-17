@@ -115,6 +115,7 @@ def main():
             routes['local'].publish(path([]));drain(.2)
             assert len(monitor.planning_paths['local'])==0
             # Explicit global invalidation clears obsolete image and goal checks.
+            monitor.local_grid_at-=6.  # No fresh local map remains in this fixture.
             for publisher in mapper.global_pubs:publisher.publish(GridMap())
             drain(.3);assert monitor.grid is None
             assert not monitor.request_goal(3,3,0)

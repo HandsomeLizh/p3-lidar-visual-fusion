@@ -77,6 +77,12 @@ class Monitor(Node):
         self.obstacle_data = None
         self.last_color_key = None
         self.last_grid_token = None
+        self.local_grid_message = None
+        self.local_grid_at = 0.
+        self.global_grid_at = 0.
+        self.global_grid_valid = False
+        self.grid_source = 'none'
+        self.grid_stamps = {}
         self.grid_frame = 'map'
         self.planning_paths = {}
         self.planning_revision = 0
@@ -85,6 +91,7 @@ class Monitor(Node):
         self.goal_status = '点击“设置目标”，在已观测的可通行栅格上拖动指定朝向'
         self.create_timer(.1, self.send_requested_goal)
         self.create_timer(.25, self.apply_color_mode)
+        self.create_timer(.5, self.check_grid_freshness)
         # Keep the fixed map frame available even before the first estimate.
         # This is only a display anchor, never map->base_link or an estimated pose.
         self.display_anchor = StaticTransformBroadcaster(self)
@@ -108,6 +115,7 @@ class Monitor(Node):
         self.create_subscription(PointCloud2, '/T3/mapping/stereo_map',
                                  lambda msg:self.on_cloud(msg,'stereo'),retained)
         self.create_subscription(GridMap, '/T3/mapping/global_grid_map', self.on_grid, retained)
+        self.create_subscription(GridMap, '/Car/T3/mapping/grid_map', self.on_local_grid, retained)
         self.create_subscription(String, '/T3/mapping/lidar_status', self.on_status, retained)
         self.create_subscription(String, '/Car/T3/metrics/frame_timing', self.on_timing, live)
         self.create_subscription(String, '/fusion/status', self.on_fusion_health, live)
@@ -187,6 +195,65 @@ class Monitor(Node):
             self.thumbnails[side] = thumbnail
 
     def on_grid(self, message):
+        if not self.grid_ordered(message,'global'):return
+        try:
+            ready=self.grid_payload_ready(message)
+            if ready:
+                self.render_grid(message)
+                self.global_grid_at=time.monotonic();self.global_grid_valid=True
+                self.grid_source='global';return
+        except (ValueError,IndexError,TypeError) as error:
+            self.get_logger().warning('Global display grid rejected: '+str(error),throttle_duration_sec=5.)
+        self.global_grid_valid=False
+        self.show_local_grid()
+
+    def on_local_grid(self,message):
+        if not self.grid_ordered(message,'local'):return
+        try:ready=self.grid_payload_ready(message,160000)
+        except (ValueError,IndexError,TypeError) as error:
+            ready=False
+            self.get_logger().warning('Local display grid rejected: '+str(error),throttle_duration_sec=5.)
+        self.local_grid_message=message if ready else None
+        self.local_grid_at=time.monotonic() if ready else 0.
+        if not self.global_grid_valid:self.show_local_grid()
+
+    def grid_ordered(self,message,source):
+        if not message.layers:return True  # Explicit invalidation may have no stamp.
+        stamp=message.header.stamp.sec+message.header.stamp.nanosec*1e-9
+        if stamp<self.grid_stamps.get(source,-float('inf')):return False
+        self.grid_stamps[source]=stamp
+        return True
+
+    @staticmethod
+    def grid_payload_ready(message,limit=1000000):
+        if 'elevation' not in message.layers or message.outer_start_index or message.inner_start_index:return False
+        if message.header.frame_id not in ('map','odom'):raise ValueError('Unsupported grid frame')
+        if len(message.layers)!=len(message.data) or not 1<=len(message.data)<=16:raise ValueError('Malformed grid layers')
+        layer=message.data[list(message.layers).index('elevation')]
+        if len(layer.layout.dim)!=2:raise ValueError('Malformed grid dimensions')
+        ny,nx=(int(d.size) for d in layer.layout.dim)
+        geometry=[message.info.resolution,message.info.length_x,message.info.length_y,
+                  message.info.pose.position.x,message.info.pose.position.y]
+        if nx<=0 or ny<=0 or nx*ny>limit or not np.isfinite(geometry).all() or min(geometry[:3])<=0:
+            raise ValueError('Grid geometry exceeds display limits')
+        if any(len(d.data)!=nx*ny for d in message.data):raise ValueError('Malformed grid layers')
+        return bool(np.isfinite(np.asarray(layer.data)).any())
+
+    def check_grid_freshness(self):
+        if self.global_grid_valid and time.monotonic()-self.global_grid_at<=8.:return
+        self.global_grid_valid=False
+        self.show_local_grid()
+
+    def show_local_grid(self):
+        if self.local_grid_message is not None and time.monotonic()-self.local_grid_at<=5.:
+            self.render_grid(self.local_grid_message);self.grid_source='local';return
+        self.local_grid_message=None
+        with self.lock:
+            self.elevation_data=None;self.obstacle_data=None;self.grid=None
+            self.last_grid_token=None;self.grid_source='none'
+            self.goal_requested=None
+
+    def render_grid(self, message):
         if 'elevation' not in message.layers or message.outer_start_index or message.inner_start_index:
             with self.lock:
                 self.elevation_data=None;self.obstacle_data=None;self.grid=None
@@ -589,7 +656,8 @@ class Window:
             cost = f'{elapsed:.2f} s' if isinstance(elapsed, (int, float)) else '—'
             self.detail.config(text=f'航向 {math.degrees(yaw):.1f}°   处理耗时 {cost}   轨迹点 {len(path.poses)}   坐标 {path.header.frame_id}')
             self.draw_map(path, yaw, grid)
-        self.map_label.config(text=f"完整点云 {cloud.get('voxel_count', 0):,} 点 · 显示 {count:,} 点（0.25 m / 上限 10 万）\n绿色：全局规划 · 紫色：局部路径 · 橙色：已行驶轨迹")
+        source_label={'global':'全局高程图','local':'局部高程图（全局暂不可用）','none':'等待高程图'}.get(self.node.grid_source,'等待高程图')
+        self.map_label.config(text=f"{source_label} · 完整点云 {cloud.get('voxel_count', 0):,} 点 · 显示 {count:,} 点\n绿色：全局规划 · 紫色：局部路径 · 橙色：已行驶轨迹")
         directory = os.environ.get('T3_VISUAL_RUNTIME')
         if directory:
             settings = FilePath(directory) / 'view_settings.json'
