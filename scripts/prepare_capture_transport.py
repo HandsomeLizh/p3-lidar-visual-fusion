@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build a private copy of P3 capture with overlapping receive/decode stages."""
+"""Prepare a private capture with receive/decode/publication overlap."""
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import shutil
+from patch_capture_parallel import patch_parallel
 
 ROOT=Path(__file__).resolve().parents[1]
 MANIFEST=ROOT/'build/capture_transport/source.json'
@@ -53,8 +54,14 @@ def prepare(runtime):
     replace(cpp,signature,signature[:-1]+', const cv::Mat & prepared)')
     replace(cpp,'    cv::Mat decoded = cv::imdecode(\n        cv::Mat(data, false), cv::IMREAD_UNCHANGED);',
             '    cv::Mat decoded = prepared.empty() ? cv::imdecode(\n        cv::Mat(data, false), cv::IMREAD_UNCHANGED) : prepared;')
+    patch_parallel(target)
     MANIFEST.parent.mkdir(parents=True,exist_ok=True)
-    MANIFEST.write_text(json.dumps({'original_source':str(source),'original_hashes':original},indent=2))
+    # Preparing a staged build must not invalidate the currently installed binary.
+    # The installer records the new hash only after the new executable is in place.
+    previous=json.loads(MANIFEST.read_text()) if MANIFEST.exists() else {}
+    data={'original_source':str(source),'original_hashes':original}
+    if 'binary_sha256' in previous:data['binary_sha256']=previous['binary_sha256']
+    MANIFEST.write_text(json.dumps(data,indent=2))
 
 def record():
     data=json.loads(MANIFEST.read_text());data['binary_sha256']=sha(BINARY)

@@ -6,8 +6,8 @@ RUNTIME="${P3_RUNTIME_ROOT:-$ROOT/../roma_t3_algorithm_bundle_20260825/envx_runt
 source /opt/ros/humble/setup.bash
 source "$RUNTIME/install/setup.bash"
 set -u
-UE_HOST=192.168.10.22
-UE_PORT=6665
+UE_HOST="${P3_UE_HOST:-192.168.10.22}"
+UE_PORT="${P3_UE_PORT:-6665}"
 CAPTURE_HZ="${P3_CAPTURE_HZ:-2.0}"
 BATCH_GAP="${P3_CAPTURE_BATCH_GAP:-0.0}"
 while [[ $# -gt 0 ]]; do
@@ -34,10 +34,17 @@ case "${P3_CAPTURE_OPTIMIZED:-auto}" in
  *) echo 'P3_CAPTURE_OPTIMIZED must be auto, 0, or 1.' >&2; exit 2;;
 esac
 printf 'Capture executable: %s\n' "${CAPTURE[*]}"
+TRANSPORT_ARGS=()
+if [[ "${CAPTURE[0]}" == "$PRIVATE_BINARY" ]]; then
+ TRANSPORT_ARGS=(-p parallel_publication:="${P3_CAPTURE_PARALLEL:-true}"
+  -p publication_max_age_sec:="${P3_CAPTURE_MAX_AGE_SEC:-3.0}"
+  -p publication_batch_mib:="${P3_CAPTURE_BATCH_MIB:-64}")
+fi
 exec "${CAPTURE[@]}" --ros-args \
  -p tcp_host:="$UE_HOST" -p tcp_port:="$UE_PORT" \
  -p capture_freq:="$CAPTURE_HZ" -p batch_interval:="$BATCH_GAP" -p batch_count:=20000 \
+ -p timeout:="${P3_CAPTURE_TIMEOUT_SEC:-10.0}" \
  -p timestamp_mode:="${SENSOR_TIMESTAMP_MODE:-meta_relative}" \
  -p save_dir:="$ROOT/results/capture_scratch" -p save_data:=false \
- -p auto_start:=true -p big_endian:=false -p publish_thumbnail:=false \
+ -p auto_start:=true -p big_endian:=false -p publish_thumbnail:=false "${TRANSPORT_ARGS[@]}" \
  -p 'output_topics:=[rgb_0:=/Car/T5/Cam_Left/image_raw/color,rgb_1:=/Car/T5/Cam_Right/image_raw/color,cpulidar_0:=/Car/T5/OS1/points,tof_0_depth:=/Car/T5/TOF_Left/image_raw/depth,tof_1_depth:=/Car/T5/TOF_Right/image_raw/depth]'

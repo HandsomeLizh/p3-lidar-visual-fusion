@@ -12,5 +12,6 @@ cmake -S "$ROOT/vendor/capture_overlap_source" -B "$ROOT/build/capture_transport
   -DCMAKE_INSTALL_PREFIX="$ROOT/install/capture_transport" \
   -DPython3_EXECUTABLE=/usr/bin/python3 -DPYTHON_EXECUTABLE=/usr/bin/python3
 cmake --build "$ROOT/build/capture_transport" -j2
-cmake --install "$ROOT/build/capture_transport"
-python3 "$ROOT/scripts/prepare_capture_transport.py" --record
+cmake --install "$ROOT/build/capture_transport" --prefix "$ROOT/build/capture_transport/stage"
+python3 "$ROOT/scripts/install_capture_transport.py" \
+ "$ROOT/build/capture_transport/stage/lib/sensor_capture_ros2/sensor_capture_node"
