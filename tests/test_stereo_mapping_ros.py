@@ -81,7 +81,8 @@ def main():
                 combined_display_receives_both_sources=True,global_grid_published=True,
                 max_pending_cells=cfg['stereo_mapping']['pending_cells'],vehicle_commands_published=0,
                 scope='Synthetic points and formal poses, real mapper and ROS transport; not a moving accuracy test')
-            output=ROOT/'results/hardware104_deployment/stereo_mapping_ros.json';output.write_text(json.dumps(result,indent=2))
+            output=ROOT/'results/hardware104_deployment/stereo_mapping_ros.json'
+            output.parent.mkdir(parents=True,exist_ok=True);output.write_text(json.dumps(result,indent=2))
             print(json.dumps(result))
         finally:
             ex.shutdown();mapper.dense_writer.close();mapper.grid.close();mapper.delivery.close();mapper.cloud.close();mapper.tum.close()

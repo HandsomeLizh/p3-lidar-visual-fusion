@@ -28,7 +28,7 @@ class DynamicMapTests(unittest.TestCase):
 
     def layer(self):
         m=self.grid.extract_window(center_x=2.1,center_y=.1,length_x=2.,length_y=2.)
-        layers,occ=TerrainMapper.terrain_layers(SimpleNamespace(cfg={'map_resolution':.2}),m)
+        layers,occ=TerrainMapper.terrain_layers(SimpleNamespace(cfg={'map_resolution':.2},height_only=False),m)
         return m,layers,occ
 
     def test_new_obstacle_then_confirmed_removal_updates_grid_and_preview(self):
@@ -70,7 +70,7 @@ class DynamicMapTests(unittest.TestCase):
     def test_hard_obstacle_is_known_even_without_neighbor_heights(self):
         z=np.array([[.2]],dtype=np.float32)
         m=SimpleNamespace(elevation=z,height_range=np.array([[.5]],dtype=np.float32),all_layers=lambda:{'elevation':z})
-        layers,occ=TerrainMapper.terrain_layers(SimpleNamespace(cfg={'map_resolution':.2}),m)
+        layers,occ=TerrainMapper.terrain_layers(SimpleNamespace(cfg={'map_resolution':.2},height_only=False),m)
         self.assertEqual(occ[0,0],100);self.assertEqual(layers['obstacle'][0,0],1.)
 
 
