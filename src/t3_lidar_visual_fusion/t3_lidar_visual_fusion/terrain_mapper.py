@@ -34,6 +34,7 @@ from .legacy.grid_map_message import make_grid_map_message
 from .legacy.voxel_cloud_store import VoxelCloudStore
 from .stereo_mapping import StereoConfirmation
 from .ground_clearance import GroundClearance
+from .self_filter import SelfFilter
 
 
 def input_locked(method):
@@ -59,6 +60,7 @@ class TerrainMapper(Node):
         if self.cfg.get('map_output','terrain') not in ('terrain','elevation_only'):
             raise ValueError('map_output must be terrain or elevation_only')
         self.height_only=self.cfg.get('map_output')=='elevation_only'
+        self.self_filter=SelfFilter(**self.cfg.get('self_filter',{}))
         self.ground_clearance=GroundClearance(**self.cfg.get('ground_clearance',{}))
         self.stereo_ground=GroundClearance(**self.cfg.get('ground_clearance',{}))
         self.grid=DiskElevationMap(self.internal/"elevation_tiles.sqlite",resolution=self.cfg["map_resolution"],
@@ -79,12 +81,16 @@ class TerrainMapper(Node):
         self.last_pose=None;self.last_header=None;self.last_stamps={};self.dirty=False
         self.last_input_wall={};self.last_pose_wall=None
         self.stats={"mapped_scans":0,"dropped_scans":0,"map_points":0,"lidar_scans":0,"tof_scans":0}
+        self.stats['self_filter']=dict(enabled=self.self_filter.enabled,frame='base_link',
+            min_xyz_m=self.self_filter.minimum.tolist() if self.self_filter.enabled else None,
+            max_xyz_m=self.self_filter.maximum.tolist() if self.self_filter.enabled else None,sources={})
         self.stereo_cfg=self.cfg.get('stereo_mapping',{})
         self.stereo_confirmation=StereoConfirmation(self.cfg['map_resolution'],self.stereo_cfg)
         self.fusion_health={};self.fusion_health_wall=-float('inf')
         self.stereo_health_generation=0;self.stereo_processed_generation=0
         self.stats.update(stereo_scans=0,stereo_cells=0,stereo_rejected=0,
-                          stereo_enabled=bool(self.stereo_cfg.get('enabled',False)),stereo_reason='waiting')
+                          stereo_enabled=bool(self.stereo_cfg.get('enabled',False)),
+                          stereo_reason='waiting' if self.stereo_cfg.get('enabled',False) else 'disabled')
         self.bridge=CvBridge();self.mask=None
         self.camera_from_base=inverse(rigid(self.cfg["base_from_camera_left"]))
         self.tum=(self.output/"trajectory_map.tum").open("w")
@@ -110,7 +116,8 @@ class TerrainMapper(Node):
         self.revision_pubs=[self.create_publisher(UInt64,t,qos) for t in
             ["/T3/mapping/global_map_revision","/Car/T3/mapping/global_map_revision"]]
         self.cloud_pub=self.create_publisher(PointCloud2,"/T3/mapping/lidar_map",qos)
-        self.stereo_cloud_pub=self.create_publisher(PointCloud2,'/T3/mapping/stereo_map',qos)
+        self.stereo_cloud_pub=(self.create_publisher(PointCloud2,'/T3/mapping/stereo_map',qos)
+                               if self.stereo_cfg.get('enabled',False) else None)
         self.elevation_pub=self.create_publisher(PointCloud2,"/T3/mapping/elevation_cloud",qos)
         self.incremental_pub=None if self.height_only else self.create_publisher(IncrementalSemanticMap,"/T3/semantic/incremental_map",qos)
         self.occupancy_pub=None if self.height_only else self.create_publisher(OccupancyGrid,"/T3/mapping/traversability",qos)
@@ -220,6 +227,11 @@ class TerrainMapper(Node):
         use=(ranges>=self.stereo_cfg.get('min_depth_m',.5))&(ranges<=self.stereo_cfg.get('max_depth_m',8.))
         xyz,variance=xyz[use],data[use,3]
         base=xyz@transform[:3,:3].T+transform[:3,3]
+        keep=self.body_keep_mask(base,'stereo')
+        base,variance=base[keep],variance[keep]
+        if not len(base):
+            self.stereo_confirmation.clear();self.stats['stereo_reason']='no_points_after_mapping_filters'
+            return
         offset=base@pose[:3,:3].T;points=offset+pose[:3,3]
         # Odometry orientation covariance is about the fixed frame axes.
         jacobian=np.zeros((len(points),6));jacobian[:,2]=1.
@@ -374,6 +386,16 @@ class TerrainMapper(Node):
         self.stats.setdefault('queue_wait_sec_by_source',{})[name]=self.stats['last_queue_wait_sec']
         return msg,name,t_base_sensor,stamp,point_times,pose,self.pose_quality_at(stamp)
 
+    def body_keep_mask(self,base,source):
+        keep=self.self_filter.keep_mask(base)
+        state=self.stats['self_filter']['sources'].setdefault(source,
+            dict(scans=0,input_points=0,removed_points=0,empty_scans=0))
+        removed=len(base)-int(np.count_nonzero(keep))
+        state['scans']+=1;state['input_points']+=len(base);state['removed_points']+=removed
+        state['last_input_points']=len(base);state['last_removed_points']=removed
+        if len(base) and removed==len(base):state['empty_scans']+=1
+        return keep
+
     def process_queue(self,queue):
         sample=self.take_ready(queue)
         if not sample:return False
@@ -391,9 +413,14 @@ class TerrainMapper(Node):
             xyz=xyz[valid]
             if not len(xyz):raise ValueError('Cloud contains no usable range points')
             base=xyz@t_base_sensor[:3,:3].T+t_base_sensor[:3,3]
+            # Use the calibrated body frame, before ground fitting or either
+            # map store. Keep raw input and the localization stream unchanged.
+            keep=self.body_keep_mask(base,name)
+            base,xyz=base[keep],xyz[keep]
+            if not len(base):return True
             points=base@pose[:3,:3].T+pose[:3,3]
             if point_times is not None:
-                times=point_times[valid]
+                times=point_times[valid][keep]
                 bins=np.floor(times/.005).astype(int)
                 for key in np.unique(bins):
                     use=bins==key
@@ -537,7 +564,7 @@ class TerrainMapper(Node):
             self.elevation_pub.publish(xyz_cloud(pts,self.last_header,m.elevation[rr,cc]))
             preview_cap=self.cfg["cloud_preview_points"]//4 if self.pressure else self.cfg["cloud_preview_points"]
             self.cloud_pub.publish(xyz_cloud(self.cloud.preview(preview_cap),self.last_header))
-            if self.stereo_cfg.get('enabled',False):
+            if self.stereo_cloud_pub is not None:
                 self.stereo_cloud_pub.publish(xyz_cloud(
                     np.asarray(list(self.grid.stereo_preview.values())).reshape(-1,3),self.last_header))
             if self.incremental_pub is not None:

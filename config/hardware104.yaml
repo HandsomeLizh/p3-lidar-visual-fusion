@@ -1,6 +1,6 @@
 name: Rover 104 real Ouster OS1-128 + internal IMU + Galaxy stereo
 stereo_mapping:
-  enabled: true
+  enabled: false  # Height mapping uses LiDAR only; stereo visual odometry stays enabled.
   topic: /fusion/stereo_points
   max_hz: 2.0
   max_points: 512
@@ -121,6 +121,13 @@ base_from_camera_right:
 stereo_max_skew: 0.01
 min_range: 0.7
 max_range: 50.0
+self_filter:
+  enabled: true
+  # base_link: 2 x 2 m behind camera x=0.530, centered on vehicle Y=0.
+  # Camera z=0.832: 0.7 m below it, plus 0.2 m above for recorded support returns.
+  # Operator-requested exclusion volume, not a calibrated collision model.
+  min_xyz_m: [-1.47, -1.0, 0.13]
+  max_xyz_m: [0.53, 1.0, 1.03]
 max_input_points: 140000
 vision_gate:
   recovery_frames: 4

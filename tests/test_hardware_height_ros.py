@@ -19,6 +19,7 @@ def main():
     assert os.environ['ROS_DOMAIN_ID']=='94' and os.environ['ROS_LOCALHOST_ONLY']=='1'
     with tempfile.TemporaryDirectory(dir=ROOT/'build') as temporary:
         out=Path(temporary);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
+        cfg['stereo_mapping']['enabled']=True  # Exercise the optional feature explicitly.
         lidar=np.eye(4);lidar[2,3]=.65
         camera=np.eye(4);camera[:3,:3]=[[0,0,1],[-1,0,0],[0,-1,0]];camera[2,3]=.8
         cfg.update(base_from_lidar=lidar.tolist(),base_from_camera_left=camera.tolist(),

@@ -13,8 +13,10 @@ def main():
     assert os.environ['ROS_DOMAIN_ID']=='88' and os.environ['ROS_LOCALHOST_ONLY']=='1'
     with tempfile.TemporaryDirectory(dir=ROOT/'build') as tmp:
         root=Path(tmp);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
+        cfg['stereo_mapping']['enabled']=True  # Mixed-source queue fixture.
         cfg.update(base_from_lidar=np.eye(4).tolist(),base_from_camera_left=np.eye(4).tolist(),
-            ground_clearance={'enabled':False},elevation_fusion={'enabled':False},map_output='terrain',
+            ground_clearance={'enabled':False},self_filter={'enabled':False},
+            elevation_fusion={'enabled':False},map_output='terrain',
             mapping_pose_settle_sec=0.,map_window=8.,tile_cells=16,map_publish_period=1000.,global_publish_period=1000.)
         path=root/'profile.yaml';path.write_text(yaml.safe_dump(cfg))
         rclpy.init(args=['--ros-args','-p','profile_path:='+str(path),'-p','output_dir:='+str(root/'map')])
