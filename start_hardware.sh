@@ -12,8 +12,8 @@ if [[ ! "$available_kib" =~ ^[0-9]+$ ]] || (( available_kib < 4 * 1024 * 1024 ))
 fi
 export ROS_DOMAIN_ID="${P3_HARDWARE_DOMAIN:-59}"
 export ROS_LOCALHOST_ONLY=0
-if [[ -f /home/yanfa/program/cyclonedds.xml ]]; then
-  export CYCLONEDDS_URI="file:///home/yanfa/program/cyclonedds.xml"
-fi
+# Keep this pipeline's images, maps and sensor subscriptions off multicast data
+# and below the Wi-Fi MTU. The shared driver/other-project configuration stays intact.
+export CYCLONEDDS_URI="file://$ROOT/config/cyclonedds_mapping104.xml"
 source "$ROOT/scripts/env.sh"
 exec python3 "$ROOT/scripts/control.py" start --profile "$ROOT/config/hardware104.yaml" --network "$@"

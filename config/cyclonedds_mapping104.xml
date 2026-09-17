@@ -1,4 +1,4 @@
-<!-- Mapper-only transport: avoid IP fragmentation for 64 m / 2 MB GridMaps.
+<!-- Hardware pipeline transport: avoid IP fragmentation for images and 64 m / 2 MB GridMaps.
      Sensor drivers keep their existing configuration. 104 already permits a
      10 MiB receive buffer; no system-wide kernel change is made here. -->
 <CycloneDDS xmlns="https://cdds.io/config">
