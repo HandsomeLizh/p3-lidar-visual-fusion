@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=03 打开104手动底盘控制
+Comment=独立启动或复用实车底盘，通过 SSH 显示原手动控制窗口
+Exec=/usr/bin/gnome-terminal -- /home/yanfa/P3/viewer104/start_104_control.sh
+Icon=input-gaming
+Terminal=false
+Categories=Science;
+StartupNotify=false

@@ -17,7 +17,7 @@ cd /home/yanfa/P3/viewer104
 ./start_104_and_view.sh      # 启动/复用建图与显示
 ```
 
-采集与建图是两个独立入口；机器人控制使用现有独立控制程序，不会被它们自动启动。104 已经在建图时复用现有地图，不重新建立原点。密码不写入脚本。
+需要手动驾驶时，在 237 单独双击“03 打开104手动底盘控制”，或另开终端执行 `/home/yanfa/P3/viewer104/start_104_control.sh`。它通过 SSH 显示原控制面板。采集、建图、手动控制是三个独立入口；104 已经在建图时复用现有地图，不重新建立原点。密码不写入脚本。
 
 ## 在 104 本机启动，界面放在 237
 
@@ -65,6 +65,25 @@ cd /home/yanfa/P3/lidar_visual_fusion
 ```
 
 `./status.sh` 只查看；`./stop.sh` 停止这套建图及它启动的窗口，传感器驱动保留。需要只关闭 237 显示，执行 237 上的 `/home/yanfa/P3/viewer104/stop.sh`。
+
+## 独立手动／底盘控制
+
+在 **104 图形桌面终端**执行：
+
+```bash
+cd /home/yanfa/P3/lidar_visual_fusion
+./start_manual_control.sh          # 打开原 Mars_Car2 控制面板
+# 只看进程状态，不启动硬件或窗口：
+./start_manual_control.sh --check
+```
+
+从 237 使用专用 `start_104_control.sh`，窗口会通过 SSH 显示在 237。不要在没有图形转发的普通 SSH 终端直接打开 GUI。
+
+- 底盘驱动：`/home/yanfa/program/Mars_Car2`；原控制面板：`/home/yanfa/program/UI/src/mars_car_gui.py`。
+- 复用已有底盘驱动；首次启动驱动沿用其电机上电、上位机控制和编码器初始化流程。
+- 初始不发送行驶指令；先点击所用区域的“停止”并确认车辆停稳，再关闭面板。关闭面板或 SSH 断线不等于停车。
+- 不自动启动 P4。采集、建图的启停不会启停底盘。
+- 实际核验：域 19 的 `/cmd_vel` 由 `Car_node` 订阅；`/Car/T5/chassis_detail` 有约 20 Hz 反馈。未执行行驶指令验证。
 
 ## 地图与记录
 
