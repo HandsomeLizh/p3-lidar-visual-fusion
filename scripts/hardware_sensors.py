@@ -52,7 +52,7 @@ def main():
             proc=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True,stdin=subprocess.DEVNULL)
         state['processes'][name]=dict(pid=proc.pid,identity=identity(proc.pid),command=command,log=str(path));save()
         print('Started',name,'PID',proc.pid,'log:',path,flush=True)
-    if not topics['lidar']:spawn('ouster',['bash','/home/yanfa/program/Lidar2/start_ouster.sh'])
+    if not topics['lidar']:spawn('ouster',['bash',str(ROOT/'scripts/start_hardware_lidar.sh')])
     else:print('Reusing existing Ouster LiDAR + IMU driver')
     if not topics['left']:spawn('stereo',['bash',str(ROOT/'scripts/start_hardware_camera.sh')])
     else:print('Reusing existing compact stereo driver')
