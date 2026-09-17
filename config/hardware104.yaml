@@ -1,6 +1,7 @@
 name: Rover 104 real Ouster OS1-128 + internal IMU + Galaxy stereo
+mapping_source: stereo  # Geometry from stereo only; localization still uses LiDAR/IMU/vision.
 stereo_mapping:
-  enabled: false  # Height mapping uses LiDAR only; stereo visual odometry stays enabled.
+  enabled: true
   topic: /fusion/stereo_points
   max_hz: 2.0
   max_points: 512

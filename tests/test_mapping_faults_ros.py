@@ -20,7 +20,7 @@ class MappingFaultTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory(dir=ROOT/'build')
         directory=Path(self.tmp.name)
         cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
-        cfg.update(mapping_pose_settle_sec=0.,map_window=8.,tile_cells=16,
+        cfg.update(mapping_source='range',mapping_pose_settle_sec=0.,map_window=8.,tile_cells=16,
                    min_range=.1,base_from_lidar=np.eye(4).tolist(),
                    instantaneous_cloud=True,deskew={'enabled':False})
         profile=directory/'profile.yaml';profile.write_text(yaml.safe_dump(cfg))

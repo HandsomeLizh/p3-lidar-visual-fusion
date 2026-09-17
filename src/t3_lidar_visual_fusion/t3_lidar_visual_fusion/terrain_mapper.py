@@ -1,4 +1,4 @@
-"""Independent LiDAR/ToF maps driven exclusively by fused body odometry."""
+"""Selected-source geometric maps driven by fused body odometry."""
 import copy
 import json
 import time
@@ -57,6 +57,21 @@ class TerrainMapper(Node):
         self.stereo_pending=deque(maxlen=2)
         self.last_processed_source=None
         self.internal=self.output/"_internal";self.internal.mkdir(exist_ok=True)
+        self.mapping_source=self.cfg.get('mapping_source','range')
+        if self.mapping_source not in ('range','stereo'):
+            raise ValueError('mapping_source must be range or stereo')
+        self.stereo_only=self.mapping_source=='stereo'
+        if self.stereo_only and not self.cfg.get('stereo_mapping',{}).get('enabled',False):
+            raise ValueError('Stereo-only maps require stereo_mapping.enabled')
+        # Never reload an old LiDAR cloud into a new stereo-only map.
+        provenance=self.internal/'geometry_source.json'
+        if provenance.exists():
+            if json.loads(provenance.read_text()).get('mapping_source')!=self.mapping_source:
+                raise ValueError('Map source changed; use a new output directory')
+        elif self.stereo_only and any(self.internal.glob('*.sqlite')):
+            raise ValueError('Existing map has no source provenance; use a new output directory')
+        else:
+            provenance.write_text(json.dumps(dict(mapping_source=self.mapping_source)))
         if self.cfg.get('map_output','terrain') not in ('terrain','elevation_only'):
             raise ValueError('map_output must be terrain or elevation_only')
         self.height_only=self.cfg.get('map_output')=='elevation_only'
@@ -81,6 +96,8 @@ class TerrainMapper(Node):
         self.last_pose=None;self.last_header=None;self.last_stamps={};self.dirty=False
         self.last_input_wall={};self.last_pose_wall=None
         self.stats={"mapped_scans":0,"dropped_scans":0,"map_points":0,"lidar_scans":0,"tof_scans":0}
+        self.stats.update(mapping_source=self.mapping_source,stereo_cloud_observations=0,
+                          ignored_source_scans=0)
         self.stats['self_filter']=dict(enabled=self.self_filter.enabled,frame='base_link',
             min_xyz_m=self.self_filter.minimum.tolist() if self.self_filter.enabled else None,
             max_xyz_m=self.self_filter.maximum.tolist() if self.self_filter.enabled else None,sources={})
@@ -96,12 +113,13 @@ class TerrainMapper(Node):
         self.tum=(self.output/"trajectory_map.tum").open("w")
         self.tum_last_offset=None
         self.input_node.create_subscription(Odometry,"/T3/semantic/current_pose",self.odom,100)
-        self.input_node.create_subscription(PointCloud2,self.cfg.get("mapping_lidar_topic","/fusion/lidar"),lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
+        if not self.stereo_only:
+            self.input_node.create_subscription(PointCloud2,self.cfg.get("mapping_lidar_topic","/fusion/lidar"),lambda m:self.enqueue(m,"lidar",self.cfg["base_from_lidar"]),QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
         if self.stereo_cfg.get('enabled',False):
             self.input_node.create_subscription(PointCloud2,self.stereo_cfg.get('topic','/fusion/stereo_points'),
                 self.enqueue_stereo,QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE))
             self.input_node.create_subscription(String,'/fusion/status',self.fusion_status,2)
-        for source in self.cfg.get("tof_sources",[]):
+        for source in ([] if self.stereo_only else self.cfg.get("tof_sources",[])):
             rigid(source["base_from_sensor"])
             self.input_node.create_subscription(PointCloud2,source["topic"],lambda m,s=source:self.enqueue(m,s["name"],s["base_from_sensor"]),qos_profile_sensor_data)
         if self.cfg.get("semantic_topic") and not self.height_only:
@@ -115,9 +133,11 @@ class TerrainMapper(Node):
             ([] if self.height_only else ["/T3/mapping/global_overview","/Car/T3/mapping/global_overview"])]
         self.revision_pubs=[self.create_publisher(UInt64,t,qos) for t in
             ["/T3/mapping/global_map_revision","/Car/T3/mapping/global_map_revision"]]
-        self.cloud_pub=self.create_publisher(PointCloud2,"/T3/mapping/lidar_map",qos)
+        self.cloud_topic='/T3/mapping/stereo_map' if self.stereo_only else '/T3/mapping/lidar_map'
+        self.stats['cloud_topic']=self.cloud_topic
+        self.cloud_pub=self.create_publisher(PointCloud2,self.cloud_topic,qos)
         self.stereo_cloud_pub=(self.create_publisher(PointCloud2,'/T3/mapping/stereo_map',qos)
-                               if self.stereo_cfg.get('enabled',False) else None)
+                               if self.stereo_cfg.get('enabled',False) and not self.stereo_only else None)
         self.elevation_pub=self.create_publisher(PointCloud2,"/T3/mapping/elevation_cloud",qos)
         self.incremental_pub=None if self.height_only else self.create_publisher(IncrementalSemanticMap,"/T3/semantic/incremental_map",qos)
         self.occupancy_pub=None if self.height_only else self.create_publisher(OccupancyGrid,"/T3/mapping/traversability",qos)
@@ -130,7 +150,7 @@ class TerrainMapper(Node):
             self.create_service(GetGridMap,topic,self.query)
         for topic in ["/T3/mapping/save","/T3/mapping/save_grid_map","/Car/T3/mapping/save_grid_map"]:
             self.create_service(Trigger,topic,self.save_service)
-        self.get_logger().info("Terrain mapper ready: elevation GridMap and persistent LiDAR XYZ")
+        self.get_logger().info("Terrain mapper ready: elevation GridMap; persistent "+self.mapping_source+" XYZ")
 
     @input_locked
     def odom(self,msg):
@@ -241,12 +261,17 @@ class TerrainMapper(Node):
             self.stats['stereo_rejected']+=1;self.stats['stereo_reason']='invalid_pose_covariance';return
         variance=variance+np.maximum(0.,np.einsum('ni,ij,nj->n',jacobian,covariance,jacobian))
         use=variance<=self.stereo_cfg.get('max_height_std_m',.25)**2
+        # Persistent 3-D geometry contains actual triangulated observations,
+        # including overhead surfaces. Grid cells below are a separate terrain
+        # projection and never manufacture cloud points at grid centers.
+        cloud_points=points[use] if self.stereo_only else np.empty((0,3))
         terrain=self.ground_clearance.select_from_reference(points,pose[:3,3],stamp)
         if (self.ground_clearance.enabled
                 and not self.ground_clearance.reference_available(pose[:3,3],stamp)):
             # Visual fallback can establish its own observed supporting surface;
             # do not require a live LiDAR plane indefinitely.
             terrain=self.stereo_ground.select(points,(pose@transform)[:3,3],stamp=stamp)
+            self.stats['stereo_ground_clearance']=dict(self.stereo_ground.stats)
         terrain_mask=np.zeros(len(points),dtype=bool);terrain_mask[terrain]=True
         use &= terrain_mask
         self.stats['stereo_terrain_points']=int(use.sum())
@@ -257,10 +282,14 @@ class TerrainMapper(Node):
             variance_floor=self.stereo_cfg.get('variance_floor_m2',.0025),
             preview_cap=int(self.stereo_cfg.get('preview_points',20000)))
         self.stats['stereo_scans']+=1;self.stats['stereo_cells']+=len(accepted)
+        if len(cloud_points):
+            self.cloud.append(cloud_points)
+            self.stats['stereo_cloud_observations']+=len(cloud_points)
+            self.stats['map_points']=self.cloud.count
         self.stats['stereo_reason']=('mapped' if len(accepted) else
             'known_range_cells_or_height_conflict' if len(evidence) else
             'confirming' if use.any() else 'depth_or_pose_uncertainty')
-        if len(accepted):
+        if len(accepted) or len(cloud_points):
             self.advance_map_stamp(msg)
             self.dirty=True;self.stats['mapped_scans']+=1
 
@@ -280,6 +309,8 @@ class TerrainMapper(Node):
 
     @input_locked
     def enqueue(self,msg,name,transform):
+        if self.stereo_only and name!='stereo':
+            self.stats['ignored_source_scans']+=1;return
         self.last_input_wall[name]=time.monotonic()
         if self.storage_paused:
             self.stats["dropped_scans"]+=1
@@ -704,6 +735,7 @@ class TerrainMapper(Node):
             for pub in self.revision_pubs:pub.publish(UInt64(data=self.delivery.revision))
         if not self.height_only:self.overview.save(self.internal/"overview.npz")
         metadata=dict(format="t3_fusion_disk_map_v1",frame_id="map",map_to_odom="identity",
+            mapping_source=self.mapping_source,cloud_topic=self.cloud_topic,
             revision=self.grid.update_id,resolution=self.cfg["map_resolution"],tile_cells=self.grid.tile_cells,
             elevation_database="_internal/elevation_tiles.sqlite",
             cloud_database="_internal/lidar_voxels.sqlite",profile=self.cfg,

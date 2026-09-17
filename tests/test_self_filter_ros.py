@@ -17,6 +17,7 @@ def main():
     assert os.environ['ROS_DOMAIN_ID']=='96' and os.environ['ROS_LOCALHOST_ONLY']=='1'
     with tempfile.TemporaryDirectory(dir=ROOT/'build') as temporary:
         out=Path(temporary);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
+        cfg['mapping_source']='range';cfg['stereo_mapping']['enabled']=False
         cfg.update(mapping_pose_settle_sec=0.,ground_clearance={'enabled':False},
             instantaneous_cloud=False,deskew={'enabled':False},cloud_motion_compensated=False,
             tile_cells=16,map_publish_period=1000.,global_publish_period=1000.)
@@ -80,8 +81,8 @@ def main():
             assert not mapper.pending and mapper.stats['dropped_scans']==0
             assert mapper.cloud.count==count and mapper.grid.update_id==revision
             assert stamp_sec(mapper.last_header)==stamp
-            # The delivered 104 profile disables stereo mapping at the input,
-            # while keeping learned stereo odometry selected for localization.
+            # The explicit range-only fixture disables stereo map input while
+            # keeping learned stereo odometry selected for localization.
             assert not cfg['stereo_mapping']['enabled'] and cfg['visual_source']=='learned'
             assert mapper.stereo_cloud_pub is None
             assert '/fusion/stereo_points' not in {s.topic_name for s in mapper.input_node.subscriptions}

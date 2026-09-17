@@ -14,6 +14,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=ROOT/'build') as tmp:
         root=Path(tmp);cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
         cfg['stereo_mapping']['enabled']=True  # Mixed-source queue fixture.
+        cfg['mapping_source']='range'
         cfg.update(base_from_lidar=np.eye(4).tolist(),base_from_camera_left=np.eye(4).tolist(),
             ground_clearance={'enabled':False},self_filter={'enabled':False},
             elevation_fusion={'enabled':False},map_output='terrain',

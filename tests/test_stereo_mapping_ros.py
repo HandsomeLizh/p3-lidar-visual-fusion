@@ -22,6 +22,7 @@ def main():
     with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='stereo_map_') as directory:
         cfg=yaml.safe_load((ROOT/'config/hardware104.yaml').read_text())
         cfg['stereo_mapping']['enabled']=True  # Independent optional-feature fixture.
+        cfg['mapping_source']='range'
         mount=np.eye(4);mount[:3,:3]=[[0,0,1],[-1,0,0],[0,-1,0]];mount[2,3]=.8
         cfg.update(base_from_camera_left=mount.tolist(),base_from_lidar=np.eye(4).tolist(),
             ground_clearance={'enabled':False},
