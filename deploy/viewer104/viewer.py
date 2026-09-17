@@ -17,7 +17,8 @@ def display_commands(runtime):
    '-r','/T3/mapping/lidar_status:=/fusion/map_status',
    '-r','/Car/T5/Cam_Left/image_raw/color:=/fusion/left',
    '-r','/Car/T5/Cam_Right/image_raw/color:=/fusion/right',
-   '-r','/Car/T3/metrics/frame_timing:=/fusion/learned_status','-p','use_sim_time:=false'],
+   '-r','/Car/T3/metrics/frame_timing:=/fusion/learned_status','-p','use_sim_time:=false',
+   '-p','compressed_display_prefix:=/viewer104_transport','-p','retain_stale_grid_sec:=30.0'],
   'window':[str(ROOT/'build/t3_visual_window'),str(ROOT/'config/p3_visual_window.rviz'),str(runtime),
    '--ros-args','-r','__node:=t3_104_237_rviz','-r','__ns:='+DISPLAY_PREFIX,'-p','use_sim_time:=false']}
 

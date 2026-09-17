@@ -32,6 +32,8 @@ cd /home/yanfa/P3/viewer104
 - 104 当前三维与高程建图只用 LiDAR，点云为 `/T3/mapping/lidar_map`；双目补点及 `/T3/mapping/stereo_map` 发布已关闭。定位仍用视觉、LiDAR、真实 IMU。局部/全局高程分别为 `/Car/T3/mapping/grid_map`、`/Car/T3/mapping/global_grid_map`。外发局部图 64×64 米，右侧跟车视野 32×32 米。
 - 专用 DDS 配置采用 1400 字节 UDP 包、1280 字节 DDS 分片，接收缓冲请求 10 MiB。237 的 `net.core.rmem_max` 已配置为 10485760；系统持久设置在 `/etc/sysctl.d/90-p3-viewer104-receive.conf`。
 - RViz 点大小为 1.5 像素，保存在 `config/p3_visual_window.rviz`。104 建图程序也使用专用小包传输配置，避免相机数据分片重传影响地图接收。
+- 专用窗口从 `/viewer104_transport/*` 接收无损压缩的显示栅格，以及最高 2 Hz、320×240 的 JPEG 相机预览。104 原始定位输入、规划端 64 m GridMap 和高程数值均不改变。`start_for_237.sh` 会为已有建图补启动这一路显示传输，无需重建地图。
+- 地图短暂断流时，画面最多保留 30 秒，并标注“地图更新中断”；这段时间暂停目标发送。恢复后自动使用新图。地图下方显示已知格数量和最近接收时间，运行目录 `runtime/grid_display_status.json` 记录接收计数。
 - 操作者设置的 P4 目标点发到域 59 的 `/Car/T4/rviz_goal`，只用于 104 配套规划。
 - 启动入口会覆盖继承的其他项目 ROS 域、网络配置和显示运行目录。
 

@@ -1,5 +1,6 @@
 """Private P3 map display with explicit, one-shot operator goals for P4."""
 import json
+import io
 import math
 import os
 from pathlib import Path as FilePath
@@ -20,11 +21,12 @@ from geometry_msgs.msg import Point, TransformStamped, PoseStamped
 from tf2_ros import StaticTransformBroadcaster
 from grid_map_msgs.msg import GridMap
 from nav_msgs.msg import Odometry, Path
-from sensor_msgs.msg import Image, PointCloud2, PointField
-from std_msgs.msg import String
+from sensor_msgs.msg import Image, CompressedImage, PointCloud2, PointField
+from std_msgs.msg import String, UInt8MultiArray
 from visualization_msgs.msg import Marker, MarkerArray
 from t3_lidar_visual_fusion.ros_utils import cloud_arrays as pointcloud2_xyz_array
 from visual_style import display_sample, expand_height_limits, height_colors, localization_status, UNKNOWN_COLOR
+from viewer_wire import decode_grid
 
 
 def write_visual_state(name, value):
@@ -82,6 +84,10 @@ class Monitor(Node):
         self.global_grid_at = 0.
         self.global_grid_valid = False
         self.grid_source = 'none'
+        self.grid_message_count = {'global': 0, 'local': 0}
+        self.grid_display_at = 0.
+        self.retain_stale_grid_sec = float(self.declare_parameter('retain_stale_grid_sec', 0.).value)
+        compressed_prefix = str(self.declare_parameter('compressed_display_prefix', '').value).rstrip('/')
         self.grid_stamps = {}
         self.grid_frame = 'map'
         self.planning_paths = {}
@@ -114,14 +120,43 @@ class Monitor(Node):
         self.cloud_sources={}
         self.create_subscription(PointCloud2, '/T3/mapping/stereo_map',
                                  lambda msg:self.on_cloud(msg,'stereo'),retained)
-        self.create_subscription(GridMap, '/T3/mapping/global_grid_map', self.on_grid, retained)
-        self.create_subscription(GridMap, '/Car/T3/mapping/grid_map', self.on_local_grid, retained)
+        if compressed_prefix:
+            for source in ('global', 'local'):
+                self.create_subscription(UInt8MultiArray, compressed_prefix+'/'+source+'_grid_zlib',
+                                         lambda msg, s=source: self.on_compressed_grid(s, msg), retained)
+        else:
+            self.create_subscription(GridMap, '/T3/mapping/global_grid_map', self.on_grid, retained)
+            self.create_subscription(GridMap, '/Car/T3/mapping/grid_map', self.on_local_grid, retained)
         self.create_subscription(String, '/T3/mapping/lidar_status', self.on_status, retained)
         self.create_subscription(String, '/Car/T3/metrics/frame_timing', self.on_timing, live)
         self.create_subscription(String, '/fusion/status', self.on_fusion_health, live)
         for side in ('Left', 'Right'):
-            self.create_subscription(Image, f'/Car/T5/Cam_{side}/image_raw/color',
-                                     lambda msg, key=side: self.on_image(key, msg), live)
+            if compressed_prefix:
+                self.create_subscription(CompressedImage, compressed_prefix+'/'+side.lower()+'/compressed',
+                                         lambda msg, key=side: self.on_compressed_image(key, msg), live)
+            else:
+                self.create_subscription(Image, f'/Car/T5/Cam_{side}/image_raw/color',
+                                         lambda msg, key=side: self.on_image(key, msg), live)
+
+    def on_compressed_grid(self, source, message):
+        try:
+            decoded = decode_grid(message)
+            (self.on_grid if source == 'global' else self.on_local_grid)(decoded)
+        except (ValueError, TypeError, zlib.error) as error:
+            self.get_logger().warning('Compressed display grid rejected: '+str(error), throttle_duration_sec=5.)
+
+    def on_compressed_image(self, side, message):
+        if len(message.data) > 1024*1024:
+            return
+        try:
+            bitmap = PILImage.open(io.BytesIO(bytes(message.data)))
+            if bitmap.width*bitmap.height > 320*240:
+                return
+            bitmap = bitmap.convert('RGB')
+            with self.lock:
+                self.thumbnails[side] = bitmap
+        except (ValueError, OSError):
+            return
 
     def on_pose(self, _):
         with self.lock:
@@ -195,12 +230,14 @@ class Monitor(Node):
             self.thumbnails[side] = thumbnail
 
     def on_grid(self, message):
+        self.grid_message_count['global'] += 1
         if not self.grid_ordered(message,'global'):return
         try:
             ready=self.grid_payload_ready(message)
             if ready:
                 self.render_grid(message)
                 self.global_grid_at=time.monotonic();self.global_grid_valid=True
+                self.grid_display_at=self.global_grid_at
                 self.grid_source='global';return
         except (ValueError,IndexError,TypeError) as error:
             self.get_logger().warning('Global display grid rejected: '+str(error),throttle_duration_sec=5.)
@@ -208,6 +245,7 @@ class Monitor(Node):
         self.show_local_grid()
 
     def on_local_grid(self,message):
+        self.grid_message_count['local'] += 1
         if not self.grid_ordered(message,'local'):return
         try:ready=self.grid_payload_ready(message,160000)
         except (ValueError,IndexError,TypeError) as error:
@@ -240,15 +278,27 @@ class Monitor(Node):
         return bool(np.isfinite(np.asarray(layer.data)).any())
 
     def check_grid_freshness(self):
-        if self.global_grid_valid and time.monotonic()-self.global_grid_at<=8.:return
-        self.global_grid_valid=False
-        self.show_local_grid()
+        if not (self.global_grid_valid and time.monotonic()-self.global_grid_at<=8.):
+            self.global_grid_valid=False
+            self.show_local_grid()
+        write_visual_state('grid_display_status.json', dict(source=self.grid_source,
+            messages=dict(self.grid_message_count),
+            known_cells=self.grid[2] if self.grid else 0,
+            receipt_age_sec=time.monotonic()-self.grid_display_at if self.grid_display_at else None,
+            source_stamps=dict(self.grid_stamps), fresh=self.grid_is_fresh()))
+
+    def grid_is_fresh(self):
+        return ((self.grid_source=='global' and time.monotonic()-self.global_grid_at<=8.) or
+                (self.grid_source=='local' and time.monotonic()-self.local_grid_at<=5.))
 
     def show_local_grid(self):
         if self.local_grid_message is not None and time.monotonic()-self.local_grid_at<=5.:
-            self.render_grid(self.local_grid_message);self.grid_source='local';return
+            self.render_grid(self.local_grid_message);self.grid_source='local'
+            self.grid_display_at=self.local_grid_at;return
         self.local_grid_message=None
         with self.lock:
+            if self.grid is not None and time.monotonic()-self.grid_display_at<=self.retain_stale_grid_sec:
+                self.grid_source='stale';self.goal_requested=None;return
             self.elevation_data=None;self.obstacle_data=None;self.grid=None
             self.last_grid_token=None;self.grid_source='none'
             self.goal_requested=None
@@ -357,6 +407,8 @@ class Monitor(Node):
 
     def request_goal(self,x,y,yaw):
         with self.lock:
+            if not self.grid_is_fresh():
+                self.goal_status='地图更新中断，恢复后才能设置目标';return False
             if self.localization_unavailable():
                 self.goal_status='定位暂不可用，未发送目标';return False
             if not np.isfinite([x,y,yaw]).all() or self.elevation_data is None or self.grid_frame not in ('map','odom'):
@@ -377,8 +429,8 @@ class Monitor(Node):
     def send_requested_goal(self):
         with self.lock:
             goal,self.goal_requested=self.goal_requested,None
-            if goal is not None and self.localization_unavailable():
-                self.goal_status='定位暂不可用，未发送目标';return
+            if goal is not None and (self.localization_unavailable() or not self.grid_is_fresh()):
+                self.goal_status='定位或地图暂不可用，未发送目标';return
         if goal is None:return
         x,y,yaw,z,requested=goal
         if time.monotonic()-requested>1. or self.goal_pub.get_subscription_count()==0:
@@ -656,8 +708,11 @@ class Window:
             cost = f'{elapsed:.2f} s' if isinstance(elapsed, (int, float)) else '—'
             self.detail.config(text=f'航向 {math.degrees(yaw):.1f}°   处理耗时 {cost}   轨迹点 {len(path.poses)}   坐标 {path.header.frame_id}')
             self.draw_map(path, yaw, grid)
-        source_label={'global':'全局高程图','local':'局部高程图（全局暂不可用）','none':'等待高程图'}.get(self.node.grid_source,'等待高程图')
-        self.map_label.config(text=f"{source_label} · 完整点云 {cloud.get('voxel_count', 0):,} 点 · 显示 {count:,} 点\n绿色：全局规划 · 紫色：局部路径 · 橙色：已行驶轨迹")
+        source_label={'global':'全局高程图','local':'局部高程图（全局暂不可用）',
+                      'stale':'地图更新中断 · 保留上次画面，暂停选点','none':'等待高程图'}.get(self.node.grid_source,'等待高程图')
+        age_text=(f' · 已知 {grid[2]:,} 格 · 接收于 {time.monotonic()-self.node.grid_display_at:.1f} 秒前' if grid else '')
+        self.map_label.config(text=f"{source_label}{age_text}\n完整点云 {cloud.get('voxel_count', 0):,} 点 · 显示 {count:,} 点 · 绿：全局规划 / 紫：局部路径",
+                              fg='#ffb366' if self.node.grid_source=='stale' else '#cdd8e6')
         directory = os.environ.get('T3_VISUAL_RUNTIME')
         if directory:
             settings = FilePath(directory) / 'view_settings.json'

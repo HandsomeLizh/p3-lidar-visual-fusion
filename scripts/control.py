@@ -32,6 +32,19 @@ def spawn(s,name,args,env):
     save(s);print(f"Started {name}: PID {p.pid}",flush=True)
 
 
+def ensure_viewer_transport(state):
+    """Attach the small display feed to this run without restarting mapping."""
+    if alive(state['processes'].get('viewer_transport')):
+        return
+    if not alive(state['processes'].get('pipeline')):
+        raise RuntimeError('Mapping must be running before display transport')
+    env=dict(os.environ, ROS_DOMAIN_ID=str(state['domain']),
+             ROS_LOCALHOST_ONLY=str(state['localhost_only']),
+             CYCLONEDDS_URI=state['cyclonedds_uri'])
+    spawn(state,'viewer_transport',['/usr/bin/python3',str(ROOT/'scripts/viewer_transport.py'),
+                                  '--run-state',str(STATE)],env)
+
+
 def stop(s,name):
     p=s["processes"].get(name)
     if not alive(p):return
@@ -86,7 +99,7 @@ def main():
         for n,p in s["processes"].items():print(n,"RUNNING" if alive(p) else "STOPPED",p["pid"],p["log"])
         return
     if x.action=="stop":
-        for name in ["live_relay","monitor","capture","player","verifier","rviz","visuals","pipeline"]:stop(s,name)
+        for name in ["viewer_transport","live_relay","monitor","capture","player","verifier","rviz","visuals","pipeline"]:stop(s,name)
         return
     if any(alive(p) for p in s["processes"].values()):
         raise RuntimeError("This workspace already has an active run; use ./status.sh or ./stop.sh")
@@ -158,6 +171,8 @@ def main():
         stop(s,"monitor")
         stop(s,"pipeline")
         raise RuntimeError("Pipeline did not become ready; see "+str(out/"pipeline.log"))
+    if profile.get('hardware',{}).get('enabled') and str(s['domain'])=='59' and s['localhost_only']=='0':
+        ensure_viewer_transport(s)
     if x.verify:
         ready=out/"verifier.ready"
         spawn(s,"verifier",["/usr/bin/python3",str(ROOT/"scripts/verify_run.py"),

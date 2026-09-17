@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 import yaml
-from control import alive, stop
+from control import alive, stop, ensure_viewer_transport
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,6 +44,7 @@ def main():
                               'next_action': 'reuse' if 'pipeline' in running else 'start'}, ensure_ascii=False))
             return
         if 'pipeline' in running:
+            ensure_viewer_transport(state)
             print('104 建图已在运行，复用当前地图：' + str(state['output']), flush=True)
             return
         sensor_env = dict(os.environ, ROS_DOMAIN_ID='19', ROS_LOCALHOST_ONLY='0',
@@ -55,7 +56,7 @@ def main():
             raise RuntimeError('传感器采集未就绪。请先在 237 执行 ./start_104_capture.sh，再启动建图。')
         if running:
             print('清理这套 104 工程已停止建图后留下的窗口/辅助进程。', flush=True)
-            for name in ('live_relay', 'monitor', 'capture', 'player', 'verifier', 'rviz', 'visuals'):
+            for name in ('viewer_transport', 'live_relay', 'monitor', 'capture', 'player', 'verifier', 'rviz', 'visuals'):
                 stop(state, name)
     env = dict(os.environ, P3_HARDWARE_DOMAIN='59')
     subprocess.run(['bash', str(ROOT / 'start_hardware.sh')], cwd=ROOT, env=env, check=True)

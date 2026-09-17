@@ -1,25 +1,29 @@
 """Bounded cross-host receive check; no goals or vehicle commands."""
-import collections,json,time
+import collections,json,time,sys,io
 from pathlib import Path
 import numpy as np,rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile,ReliabilityPolicy,DurabilityPolicy
 from nav_msgs.msg import Odometry,Path as PathMessage
-from sensor_msgs.msg import PointCloud2,Image
+from sensor_msgs.msg import PointCloud2,CompressedImage
 from grid_map_msgs.msg import GridMap
-from std_msgs.msg import String
+from std_msgs.msg import String,UInt8MultiArray
+from PIL import Image as PILImage
+sys.path.insert(0,str(Path(__file__).resolve().parent/'visual'))
+from viewer_wire import decode_grid,PREFIX
 rclpy.init();node=Node('receive_probe',namespace='/viewer104_237');counts=collections.Counter();last={};first={};latest={}
 qos=QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE)
 retained=QoSProfile(depth=1,reliability=ReliabilityPolicy.RELIABLE,durability=DurabilityPolicy.TRANSIENT_LOCAL)
 topics={'pose':('/T3/semantic/current_pose',Odometry,qos),
- 'global_grid':('/Car/T3/mapping/global_grid_map',GridMap,retained),
- 'local_grid':('/Car/T3/mapping/grid_map',GridMap,retained),
+ 'global_grid':(PREFIX+'/global_grid_zlib',UInt8MultiArray,retained),
+ 'local_grid':(PREFIX+'/local_grid_zlib',UInt8MultiArray,retained),
  'cloud':('/T3/mapping/stereo_map',PointCloud2,retained),
  'lidar_cloud':('/T3/mapping/lidar_map',PointCloud2,retained),
- 'left':('/fusion/left',Image,qos),'right':('/fusion/right',Image,qos),
+ 'left':(PREFIX+'/left/compressed',CompressedImage,qos),'right':(PREFIX+'/right/compressed',CompressedImage,qos),
  'display_cloud':('/viewer104_237/rviz_cloud',PointCloud2,retained)}
 def callback(key):
  def receive(msg):
+  if key in ('global_grid','local_grid'):msg=decode_grid(msg)
   counts[key]+=1;last[key]=time.monotonic();first.setdefault(key,last[key]);latest[key]=msg
  return receive
 for key,(topic,kind,policy) in topics.items():node.create_subscription(kind,topic,callback(key),policy)
@@ -37,7 +41,9 @@ try:
  for key in ['cloud','lidar_cloud','display_cloud']:
   if key in latest:report[key+'_points']=latest[key].width*latest[key].height
  for key in ['left','right']:
-  if key in latest:report[key+'_size']=[latest[key].width,latest[key].height,latest[key].encoding]
+  if key in latest:
+   bitmap=PILImage.open(io.BytesIO(bytes(latest[key].data)))
+   report[key+'_size']=[bitmap.width,bitmap.height,latest[key].format]
  required=['pose','left','right','display_cloud']
  fresh=lambda k: counts[k]>=3 and time.monotonic()-last.get(k,0)<5
  usable_grid=any(fresh(k) and report.get(k,{}).get('known_height_cells',0)>0 for k in ['global_grid','local_grid'])
